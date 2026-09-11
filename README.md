@@ -170,6 +170,7 @@ Returns a one-line CVSS summary string (e.g. `CVSS 7.5 · NETWORK · LOW complex
 
 ```sh
 pnpm install
+pnpm setup          # one-time: configures git hooks via husky
 pnpm test
-pnpm build:action  # compiles issue-vex-assertions to dist/
+pnpm build:action   # compiles issue-vex-assertions to dist/
 ```

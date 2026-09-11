@@ -24,7 +24,7 @@
     "./csaf": "./src/csaf.js"
   },
   "scripts": {
-    "prepare": "[ \"$INIT_CWD\" = \"$PWD\" ] && husky || true",
+    "setup": "husky",
     "build:action": "ncc build issue-vex-assertions/index.js -o issue-vex-assertions/dist --license licenses.txt",
     "test": "mocha 'test/**/*.spec.js'",
     "lint": "eslint ."
