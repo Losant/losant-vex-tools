@@ -20,8 +20,8 @@
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
-    "./github": "./src/github.js",
-    "./csaf": "./src/csaf.js"
+    "./src/github": "./src/github.js",
+    "./src/csaf": "./src/csaf.js"
   },
   "scripts": {
     "setup": "husky",
