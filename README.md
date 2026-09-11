@@ -54,7 +54,7 @@ Processes recently closed `vex-pending` issues in the calling repository, writes
 The action runs from a compiled bundle at `issue-vex-assertions/dist/index.js`. Rebuild it after any source change:
 
 ```sh
-pnpm build
+pnpm build:action
 ```
 
 ---
@@ -171,5 +171,5 @@ Returns a one-line CVSS summary string (e.g. `CVSS 7.5 · NETWORK · LOW complex
 ```sh
 pnpm install
 pnpm test
-pnpm build   # compiles issue-vex-assertions to dist/
+pnpm build:action  # compiles issue-vex-assertions to dist/
 ```
