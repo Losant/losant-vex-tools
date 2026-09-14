@@ -72,16 +72,14 @@ export const createVexDocument = (docOrOptions, { publisher } = {}) => {
     return { document: meta, product_tree: { branches }, vulnerabilities: vulns };
   };
 
-  const upsertProduct = ({ name, productId, productName, shaRef }) => {
+  const upsertProduct = ({ name, productId, productName, purl }) => {
     products.set(productId, {
       category: 'product_version',
       name,
       product: {
         name: productName ?? name,
         product_id: productId,
-        product_identification_helper: {
-          hashes: [{ file_hashes: [{ algorithm: 'SHA-256', value: shaRef }], filename: productName ?? name }]
-        }
+        product_identification_helper: { purl }
       }
     });
   };
