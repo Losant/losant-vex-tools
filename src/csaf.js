@@ -105,29 +105,29 @@ export const createVexDocument = (docOrOptions, { publisher } = {}) => {
       vulnerabilities.set(cveId, vuln);
     }
 
-    for (const ids of vuln.product_status.values()) { ids.delete(productId); }
-    if (!vuln.product_status.has(status)) { vuln.product_status.set(status, new Set()); }
-    vuln.product_status.get(status).add(productId);
+    const clearFrom = (map) => { for (const ids of map.values()) { ids.delete(productId); } };
+    const addTo = (map, key) => { if (!map.has(key)) { map.set(key, new Set()); } map.get(key).add(productId); };
+
+    clearFrom(vuln.product_status);
+    addTo(vuln.product_status, status);
 
     if (status === 'under_investigation' && justification) {
       const note = vuln.notes.find((n) => n.category === 'general' && n.title === cveId);
       if (note) { note.text = justification; }
     }
 
-    for (const ids of vuln.threats.values()) { ids.delete(productId); }
+    clearFrom(vuln.threats);
     if (justification && (status === 'known_not_affected' || status === 'known_affected')) {
-      if (!vuln.threats.has(justification)) { vuln.threats.set(justification, new Set()); }
-      vuln.threats.get(justification).add(productId);
+      addTo(vuln.threats, justification);
     }
 
-    for (const ids of vuln.flags.values()) { ids.delete(productId); }
+    clearFrom(vuln.flags);
     if (label && status === 'known_not_affected') {
-      if (!vuln.flags.has(label)) { vuln.flags.set(label, new Set()); }
-      vuln.flags.get(label).add(productId);
+      addTo(vuln.flags, label);
     }
 
     for (const rem of vuln.remediations.values()) { rem.ids.delete(productId); }
-    if (remediationCategory && remediationDetails && status === 'fixed') {
+    if (remediationCategory && remediationDetails && (status === 'fixed' || status === 'known_affected')) {
       const key = `${remediationCategory}\t${remediationDetails}`;
       if (!vuln.remediations.has(key)) { vuln.remediations.set(key, { category: remediationCategory, details: remediationDetails, ids: new Set() }); }
       vuln.remediations.get(key).ids.add(productId);

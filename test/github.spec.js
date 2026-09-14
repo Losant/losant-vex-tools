@@ -1,5 +1,5 @@
 import 'should';
-import { parseVexComment, parseIssueMetadata, formatCvssLine, buildVexIssueBody } from '../src/github.js';
+import { parseVexComment, validateVexComment, parseIssueMetadata, formatCvssLine, buildVexIssueBody } from '../src/github.js';
 
 describe('parseVexComment', () => {
   it('parses a valid single-product comment', () => {
@@ -81,6 +81,63 @@ describe('parseVexComment', () => {
   it('filters out empty strings from trailing commas', () => {
     const body = 'PRODUCT: prod:v1,\nVEX: FIXED - patched';
     parseVexComment(body).productIds.should.deepEqual(['prod:v1']);
+  });
+});
+
+describe('validateVexComment', () => {
+  it('returns null for a comment with no PRODUCT or VEX lines', () => {
+    (validateVexComment('just a regular comment') === null).should.be.true();
+  });
+
+  it('returns null for null or undefined body', () => {
+    (validateVexComment(null) === null).should.be.true();
+    (validateVexComment(undefined) === null).should.be.true();
+  });
+
+  it('returns the parsed object for a valid comment', () => {
+    const body = 'PRODUCT: prod:v1\nVEX: NOT_AFFECTED - not reachable\nLABEL: component_not_present';
+    const result = validateVexComment(body);
+    result.should.not.have.property('error');
+    result.status.should.equal('known_not_affected');
+    result.label.should.equal('component_not_present');
+  });
+
+  it('returns an error when PRODUCT line is missing', () => {
+    const body = 'VEX: NOT_AFFECTED - not reachable';
+    validateVexComment(body).error.should.match(/Missing.*PRODUCT/);
+  });
+
+  it('returns an error with a helpful message when justification is missing', () => {
+    const body = 'PRODUCT: prod:v1\nVEX: NOT_AFFECTED';
+    const result = validateVexComment(body);
+    result.error.should.match(/Missing justification/);
+    result.error.should.containEql('NOT_AFFECTED');
+  });
+
+  it('returns an error when VEX status is invalid', () => {
+    const body = 'PRODUCT: prod:v1\nVEX: UNKNOWN - reason';
+    validateVexComment(body).error.should.match(/Invalid VEX status.*UNKNOWN/);
+  });
+
+  it('returns an error when status is UNDER_INVESTIGATION', () => {
+    const body = 'PRODUCT: prod:v1\nVEX: UNDER_INVESTIGATION - looking into it';
+    validateVexComment(body).error.should.match(/UNDER_INVESTIGATION/);
+  });
+
+  it('returns an error when LABEL value is invalid', () => {
+    const body = 'PRODUCT: prod:v1\nVEX: NOT_AFFECTED - n/a\nLABEL: bad_label';
+    validateVexComment(body).error.should.match(/Invalid LABEL.*bad_label/);
+  });
+
+  it('returns an error when REMEDIATION category is invalid', () => {
+    const body = 'PRODUCT: prod:v1\nVEX: FIXED - patched\nREMEDIATION: not_a_category - details';
+    validateVexComment(body).error.should.match(/Invalid REMEDIATION category/);
+  });
+
+  it('does not flag a valid justification that starts with a valid status word', () => {
+    const body = 'PRODUCT: prod:v1\nVEX: NOT_AFFECTED - not_affected_because_of_build_flags';
+    const result = validateVexComment(body);
+    result.should.not.have.property('error');
   });
 });
 

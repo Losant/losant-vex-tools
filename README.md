@@ -43,8 +43,8 @@ Processes recently closed `vex-pending` issues in the calling repository, writes
 
 1. Fetches all issues closed within the look-back window that carry the `vex-pending` label.
 2. For each issue, parses the `VEX_META` block embedded in the issue body to extract the CVE ID, VEX file paths, and affected product IDs.
-3. Reads assessment comments (lines matching `PRODUCT: …` / `VEX: STATUS - justification`) to build a map of product → status.
-4. Reopens any issue that was closed before all of its products were assessed, posting a comment listing the missing product IDs.
+3. Reads assessment comments, validates their format (status, label, remediation category), and builds a map of product → assessment. Later comments for the same product overwrite earlier ones.
+4. Reopens any issue that has a malformed comment (posting the error and the offending comment), or that was closed before all products were assessed (posting the missing IDs).
 5. Groups valid assessments by VEX file path, reads each CSAF file from the VEX repository, applies the assessments, increments the document version, and commits the result.
 6. Labels fully processed issues `vex-reflected` and removes `vex-pending`.
 7. Optionally triggers the Cloud Run Job with `LOAD_ONLY=true` and the list of updated VEX paths.
@@ -90,15 +90,24 @@ const doc = createVexDocument(existingCsafJson);
 | Method | Description |
 |---|---|
 | `upsertProduct({ name, productId, productName, purl })` | Adds or replaces a product in the `product_tree`. `productId` is the canonical identifier (e.g. an image reference with digest). The product_identification_helper is the purl which should be formatted properly depending on the product type. |
-| `updateVulnerabilityStatus(cveId, productId, status, justification)` | Sets the VEX status for a product within a vulnerability. Moves the product between status buckets and updates the `threats` array. Valid statuses: `known_not_affected`, `known_affected`, `fixed`, `under_investigation`. |
+| `updateVulnerabilityStatus(cveId, productId, status, { justification, label, remediationCategory, remediationDetails })` | Sets the VEX status for a product within a vulnerability. Moves the product between status buckets and updates threats, flags, remediations, and notes as appropriate for the status. Valid statuses: `known_not_affected`, `known_affected`, `fixed`, `under_investigation`. |
 | `incrementVersion()` | Bumps the document version number, updates `current_release_date`, and appends a revision history entry. |
 | `getCveProductStatus(cveId, productId)` | Returns the current status string for a product/CVE pair, or `null` if not set. |
 | `getProducts()` | Returns all product branch entries from the `product_tree`. |
 | `toJson()` | Serializes the document to a plain CSAF 2.0 JSON object ready for storage. |
 
-### Status and threats
+### Status, threats, flags, remediations, and notes
 
-`updateVulnerabilityStatus` keeps product IDs exclusive across status buckets — setting a new status automatically removes the product from its previous bucket. For all statuses except `under_investigation`, it also records the justification as an `impact` threat entry. Products with the same justification string are grouped under a single threat.
+`updateVulnerabilityStatus` keeps product IDs exclusive across status buckets — setting a new status automatically removes the product from its previous bucket. Each status writes to a different set of CSAF fields:
+
+| Status | `threats[category=impact]` | `flags` | `remediations` | `notes` |
+|---|---|---|---|---|
+| `known_not_affected` | ✓ `justification` (human-readable why) | ✓ `label` (machine-readable why) | — | — |
+| `known_affected` | ✓ `justification` (impact description) | — | ✓ `remediationCategory` + `remediationDetails` (action statement) | — |
+| `fixed` | — | — | ✓ `remediationCategory` + `remediationDetails` | — |
+| `under_investigation` | — | — | — | ✓ updates note text with `justification` |
+
+Products with the same justification string are grouped under a single threat entry. Products with the same label are grouped under a single flag entry. Products with the same remediation category and details are grouped under a single remediation entry.
 
 ---
 
@@ -109,7 +118,7 @@ Provides a GitHub VEX repository client and a set of standalone helpers for pars
 ### Import
 
 ```js
-import { createGithubVexRepo, parseVexComment, parseIssueMetadata, buildVexIssueBody, formatCvssLine } from 'losant-vex-tools';
+import { createGithubVexRepo, parseVexComment, validateVexComment, parseIssueMetadata, buildVexIssueBody, formatCvssLine } from 'losant-vex-tools';
 // or directly:
 import { createGithubVexRepo } from 'losant-vex-tools/github';
 ```
@@ -130,35 +139,43 @@ const repo = createGithubVexRepo(process.env.GITHUB_TOKEN);
 | `writeVexFile({ owner, repo, path, doc, sha, message })` | Creates or updates a CSAF JSON file. Pass `sha` from a prior `readVexFile` call to update an existing file. |
 | `getClosedVexPendingIssues({ owner, repo, since })` | Paginates all closed issues labeled `vex-pending` closed since the given ISO timestamp. |
 | `getOpenVexCveIssuesMap({ owner, repo })` | Returns a `Map<cveId, issue>` of all open `vex-pending` issues. |
-| `openVexIssue({ owner, repo, cveId, vexPath, productIds, severity, referenceUrl, packages, cvss })` | Opens a new VEX triage issue with a formatted body and the `vex-pending` label. |
-| `updateVexIssue({ owner, repo, issue, cveId, vexPath, productIds, … })` | Updates the body of an existing VEX issue when the product list, severity, packages, or reference URL changes. Closes the issue automatically if all products are removed. |
-| `getAssessmentComments({ owner, repo, issueNumber })` | Returns all assessment comments on an issue as `[{ productId, status, justification }]`. Later comments for the same product ID overwrite earlier ones. |
+| `openVexIssue({ owner, repo, cveId, vexPath, productIds, severity, referenceUrl, packages, cvss, pkgFileLocation })` | Opens a new VEX triage issue with a formatted body and the `vex-pending` label. |
+| `updateVexIssue({ owner, repo, issue, cveId, vexPath, productIds, …, force })` | Updates the body of an existing VEX issue when the product list, severity, packages, reference URL, or `pkgFileLocation` changes. Pass `force: true` to rewrite the body even when nothing has changed. Closes the issue automatically if all products are removed. |
+| `getAssessmentComments({ owner, repo, issueNumber })` | Returns `{ assessments, errors }`. `assessments` is `[{ productId, status, justification, label, remediationCategory, remediationDetails }]` with later comments overwriting earlier ones for the same product. `errors` is `[{ error, body, url }]` for malformed comments. |
 | `markIssueAsReflected({ owner, repo, issue })` | Adds `vex-reflected` and removes `vex-pending` from an issue. |
 | `ensureLabel({ owner, repo, name, color })` | Creates a label if it does not already exist. |
 | `addLabels({ owner, repo, issueNumber, labels })` | Adds labels to an issue. |
 | `removeLabel({ owner, repo, issueNumber, name })` | Removes a label from an issue, ignoring 404 errors. |
 | `reopenWithComment({ owner, repo, issueNumber, body })` | Posts a comment and reopens an issue. |
 
+### `validateVexComment(body)`
+
+Validates a comment body as a VEX assessment. Returns:
+- `null` — comment has no `PRODUCT:` or `VEX:` lines; not a VEX comment
+- `{ error: string }` — looks like a VEX comment but has a formatting problem (invalid status, `UNDER_INVESTIGATION` used as an assessment, invalid `LABEL:` value, invalid `REMEDIATION:` category)
+- parsed object — valid; same shape as `parseVexComment`
+
 ### `parseVexComment(body)`
 
-Parses a VEX assessment comment body. Returns `{ productIds, status, justification }` or `null` if the comment does not contain the expected lines.
+Parses a VEX assessment comment body. Returns `{ productIds, status, justification, label, remediationCategory, remediationDetails }` or `null` if the comment does not contain the expected lines. Does not validate field values — use `validateVexComment` for that.
 
 Expected format:
 
 ```
 PRODUCT: <product ID>, <product ID>, ...
 VEX: NOT_AFFECTED - <justification text>
+LABEL: <label>
 ```
 
 Valid status values (case-insensitive): `NOT_AFFECTED`, `FIXED`, `AFFECTED`, `UNDER_INVESTIGATION`. The separator between status and justification may be a hyphen or em-dash.
 
 ### `parseIssueMetadata(issue)`
 
-Extracts the structured metadata embedded in a VEX issue body by the `<!-- VEX_META … -->` comment block. Returns `{ cveId, paths, packages, referenceUrl }` or `null` if the issue title or body does not match the expected format.
+Extracts the structured metadata embedded in a VEX issue body by the `<!-- VEX_META … -->` comment block. Returns `{ cveId, paths, packages, referenceUrl, pkgFileLocation }` or `null` if the issue title or body does not match the expected format.
 
 ### `buildVexIssueBody(opts)`
 
-Renders the full Markdown body for a VEX triage issue, including the severity heading, CVSS summary line, affected packages table, affected images table, assessment instructions, and the embedded `VEX_META` JSON block.
+Renders the full Markdown body for a VEX triage issue, including the severity heading, optional `pkgFileLocation` line, CVSS summary line, affected packages table, affected images table, assessment instructions with label and remediation reference tables, and the embedded `VEX_META` JSON block.
 
 ### `formatCvssLine(cvss)`
 

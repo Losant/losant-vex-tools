@@ -350,6 +350,16 @@ describe('createVexDocument', () => {
         doc.toJson().vulnerabilities[0].should.not.have.property('remediations');
       });
 
+      it('creates a remediation entry for known_affected with category and details', () => {
+        const doc = makeDoc();
+        doc.updateVulnerabilityStatus('CVE-2024-1111', 'prod:v1', 'known_affected', { justification: 'exploitable', remediationCategory: 'workaround', remediationDetails: 'disable the feature' });
+        const vuln = doc.toJson().vulnerabilities[0];
+        vuln.remediations.should.have.length(1);
+        vuln.remediations[0].category.should.equal('workaround');
+        vuln.remediations[0].details.should.equal('disable the feature');
+        vuln.remediations[0].product_ids.should.deepEqual(['prod:v1']);
+      });
+
       it('does not create a remediation entry for known_not_affected', () => {
         const doc = makeDoc();
         doc.updateVulnerabilityStatus('CVE-2024-1111', 'prod:v1', 'known_not_affected', { justification: 'n/a', remediationCategory: 'vendor_fix', remediationDetails: 'upgrade' });

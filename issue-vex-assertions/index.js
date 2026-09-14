@@ -42,9 +42,9 @@ const run = async () => {
 
   await forEachSerialP(async (issue) => {
     const meta = parseIssueMetadata(issue);
-    if (!meta || !Object.keys(meta.paths).length) { return; }
-
+    if (!meta) { return; }
     const allProductIds = Object.values(meta.paths).flat();
+    if (!allProductIds.length) { return; }
     const { assessments, errors } = await issuesGhRepo.getAssessmentComments({
       owner: ISSUES_OWNER, repo: ISSUES_REPO_NAME, issueNumber: issue.number
     });

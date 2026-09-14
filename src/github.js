@@ -45,9 +45,6 @@ const VALID_LABELS = new Set([
   'inline_mitigations_already_exist'
 ]);
 
-const VALID_REMEDIATION_CATEGORIES = new Set([
-  'mitigation', 'no_fix_planned', 'none_available', 'vendor_fix', 'workaround'
-]);
 
 export const validateVexComment = (body) => {
   if (!body) { return null; }
@@ -56,8 +53,15 @@ export const validateVexComment = (body) => {
 
   const parsed = parseVexComment(body);
   if (!parsed) {
+    if (!(/^PRODUCT:/m).test(body)) {
+      return { error: 'Missing `PRODUCT:` line.' };
+    }
     const vexLine = body.match(/^VEX:\s*(.+)$/im)?.[1];
     if (vexLine) {
+      const validStatusMatch = vexLine.match(/^(NOT_AFFECTED|FIXED|AFFECTED|UNDER_INVESTIGATION)/i);
+      if (validStatusMatch) {
+        return { error: `Missing justification after \`VEX: ${validStatusMatch[1].toUpperCase()}\`. Use \`VEX: ${validStatusMatch[1].toUpperCase()} - <justification>\`.` };
+      }
       const badStatus = vexLine.split(/[\s-–]/)[0];
       return { error: `Invalid VEX status \`${badStatus}\`. Valid assessment statuses are \`NOT_AFFECTED\`, \`FIXED\`, \`AFFECTED\`.` };
     }
@@ -72,7 +76,7 @@ export const validateVexComment = (body) => {
     return { error: `Invalid LABEL \`${parsed.label}\`. Valid labels: ${[...VALID_LABELS].map((l) => `\`${l}\``).join(', ')}.` };
   }
 
-  if ((/^REMEDIATION:/im).test(body) && (!parsed.remediationCategory || !VALID_REMEDIATION_CATEGORIES.has(parsed.remediationCategory))) {
+  if ((/^REMEDIATION:/im).test(body) && !parsed.remediationCategory) {
     const badCategory = body.match(/^REMEDIATION:\s*(\S+)/im)?.[1];
     return { error: `Invalid REMEDIATION category \`${badCategory}\`. Valid categories: \`mitigation\`, \`no_fix_planned\`, \`none_available\`, \`vendor_fix\`, \`workaround\`.` };
   }
@@ -153,11 +157,14 @@ REMEDIATION: <category> - <details>
 | \`none_available\` | No fix or workaround is currently available |
 | \`no_fix_planned\` | The vendor does not intend to fix this |
 
-For \`AFFECTED\`:
+For \`AFFECTED\` — include a \`REMEDIATION:\` line with the recommended action:
 \`\`\`
 PRODUCT: <product ID>, <product ID>, ...
 VEX: AFFECTED - <impact description>
+REMEDIATION: <category> - <details>
 \`\`\`
+
+Use the same remediation categories as for \`FIXED\` above.
 
 All images in this issue are currently \`UNDER_INVESTIGATION\`. Valid assessment statuses: \`NOT_AFFECTED\`, \`FIXED\`, \`AFFECTED\`
 
@@ -269,7 +276,7 @@ export const createGithubVexRepo = (token) => {
   };
 
   const updateVexIssue = async ({
-    owner, repo, issue, cveId, vexPath, oldVexPath, productIds, fixedProductIds = [], severity: overrideSeverity, referenceUrl, packages = [], cvss = null, pkgFileLocation = null
+    owner, repo, issue, cveId, vexPath, oldVexPath, productIds, fixedProductIds = [], severity: overrideSeverity, referenceUrl, packages = [], cvss = null, pkgFileLocation = null, force = false
   }) => {
     const meta = parseIssueMetadata(issue);
     const paths = meta?.paths ? { ...meta.paths } : {};
@@ -305,7 +312,7 @@ export const createGithubVexRepo = (token) => {
     const pkgFileLocationChanged = pkgFileLocation !== existingPkgFileLocation;
 
     const hasChanges = removedOldPath || productsChanged || packagesChanged || referenceUrlChanged || pkgFileLocationChanged || severity !== currentSeverity;
-    if (!hasChanges) { return; }
+    if (!hasChanges && !force) { return; }
 
     if (fixedProductIds.length) {
       await octokit.issues.createComment({
