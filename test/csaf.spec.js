@@ -90,26 +90,26 @@ describe('createVexDocument', () => {
   describe('upsertProduct', () => {
     it('adds a product to the product tree', () => {
       const doc = makeDoc();
-      doc.upsertProduct({ name: 'repo/api', productId: 'repo/api:v1', productName: 'repo/api:v1', shaRef: 'abc123' });
+      doc.upsertProduct({ name: 'repo/api', productId: 'repo/api:v1', productName: 'repo/api:v1', purl: 'abc123' });
       const { branches } = doc.toJson().product_tree;
       branches.should.have.length(1);
       branches[0].product.product_id.should.equal('repo/api:v1');
-      branches[0].product.product_identification_helper.hashes[0].file_hashes[0].value.should.equal('abc123');
+      branches[0].product.product_identification_helper.purl.should.equal('abc123');
     });
 
     it('sets the branch-level name to the bare repo path', () => {
       const doc = makeDoc();
-      doc.upsertProduct({ name: 'repo/api', productId: 'repo/api:v1', productName: 'repo/api:v1', shaRef: 'abc123' });
+      doc.upsertProduct({ name: 'repo/api', productId: 'repo/api:v1', productName: 'repo/api:v1', purl: 'abc123' });
       doc.toJson().product_tree.branches[0].name.should.equal('repo/api');
     });
 
     it('overwrites an existing product with the same productId', () => {
       const doc = makeDoc();
-      doc.upsertProduct({ name: 'repo/api', productId: 'repo/api:v1', productName: 'repo/api:v1', shaRef: 'aaa' });
-      doc.upsertProduct({ name: 'repo/api', productId: 'repo/api:v1', productName: 'repo/api:v1', shaRef: 'bbb' });
+      doc.upsertProduct({ name: 'repo/api', productId: 'repo/api:v1', productName: 'repo/api:v1', purl: 'aaa' });
+      doc.upsertProduct({ name: 'repo/api', productId: 'repo/api:v1', productName: 'repo/api:v1', purl: 'bbb' });
       const { branches } = doc.toJson().product_tree;
       branches.should.have.length(1);
-      branches[0].product.product_identification_helper.hashes[0].file_hashes[0].value.should.equal('bbb');
+      branches[0].product.product_identification_helper.purl.should.equal('bbb');
     });
   });
 

@@ -89,7 +89,7 @@ const doc = createVexDocument(existingCsafJson);
 
 | Method | Description |
 |---|---|
-| `upsertProduct({ name, productId, productName, shaRef })` | Adds or replaces a product in the `product_tree`. `productId` is the canonical identifier (e.g. an image reference with digest). |
+| `upsertProduct({ name, productId, productName, purl })` | Adds or replaces a product in the `product_tree`. `productId` is the canonical identifier (e.g. an image reference with digest). The product_identification_helper is the purl which should be formatted properly depending on the product type. |
 | `updateVulnerabilityStatus(cveId, productId, status, justification)` | Sets the VEX status for a product within a vulnerability. Moves the product between status buckets and updates the `threats` array. Valid statuses: `known_not_affected`, `known_affected`, `fixed`, `under_investigation`. |
 | `incrementVersion()` | Bumps the document version number, updates `current_release_date`, and appends a revision history entry. |
 | `getCveProductStatus(cveId, productId)` | Returns the current status string for a product/CVE pair, or `null` if not set. |
