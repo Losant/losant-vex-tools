@@ -72,16 +72,21 @@ export const createVexDocument = (docOrOptions, { publisher } = {}) => {
     return { document: meta, product_tree: { branches }, vulnerabilities: vulns };
   };
 
-  const upsertProduct = ({ name, productId, productName, shaRef }) => {
+  const upsertProduct = ({ name, productId, productName, shaRef, purl }) => {
+    const product_identification_helper = {}
+    if (shaRef) {
+      product_identification_helper.hashes = [{ file_hashes: [{ algorithm: 'SHA-256', value: shaRef }], filename: productName ?? name }]
+    }
+    if (purl) {
+      product_identification_helper.purl = purl;
+    }
     products.set(productId, {
       category: 'product_version',
       name,
       product: {
         name: productName ?? name,
         product_id: productId,
-        product_identification_helper: {
-          hashes: [{ file_hashes: [{ algorithm: 'SHA-256', value: shaRef }], filename: productName ?? name }]
-        }
+        product_identification_helper
       }
     });
   };
@@ -126,12 +131,22 @@ export const createVexDocument = (docOrOptions, { publisher } = {}) => {
 
   const getProducts = () => [...products.values()];
 
+  const getCveJustification = (cveId, productId) => {
+    const vuln = vulnerabilities.get(cveId);
+    if (!vuln) { return null; }
+    for (const [details, ids] of vuln.threats) {
+      if (ids.has(productId)) { return details; }
+    }
+    return null;
+  };
+
   return {
     toJson,
     upsertProduct,
     updateVulnerabilityStatus,
     incrementVersion,
     getProducts,
-    getCveProductStatus
+    getCveProductStatus,
+    getCveJustification
   };
 };

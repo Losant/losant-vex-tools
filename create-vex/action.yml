@@ -1,0 +1,26 @@
+name: Create VEX
+description: 'Scan the latest git tag with Trivy and create or update a CSAF 2.0 VEX file. Opens GitHub Issues for new CVEs requiring human triage.'
+inputs:
+  vex_repo:
+    required: true
+    description: 'owner/repo where CSAF VEX files are stored'
+  issues_repo:
+    required: false
+    description: 'owner/repo where vex-pending issues are filed (default: the repo running this action)'
+  vex_repo_dir:
+    required: false
+    description: 'Directory prefix within vex_repo for CSAF files'
+    default: 'packages'
+  package_name:
+    required: false
+    description: 'npm package name (default: reads from package.json in workspace)'
+  min_severity:
+    required: false
+    description: 'Minimum severity to open issues: CRITICAL, HIGH, MEDIUM, or LOW'
+    default: 'HIGH'
+  github_token:
+    required: true
+    description: 'GitHub token with write access to vex_repo and issues_repo'
+runs:
+  using: docker
+  image: Dockerfile
