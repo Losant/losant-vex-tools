@@ -11,7 +11,7 @@ const DEFAULT_PUBLISHER = {
 export const createVexDocument = (docOrOptions, { publisher } = {}) => {
   let meta;
   const products = new Map(); // Map<product_id, branch entry>
-  const vulnerabilities = new Map(); // Map<cveId, { product_status: Map<status, Set<productId>>, threats: Map<details, Set<productId>>, notes: [] }>
+  const vulnerabilities = new Map(); // Map<cveId, { product_status, threats: Map<details, Set>, flags: Map<label, Set>, remediations: Map<"cat\tdetails", {category, details, ids: Set}>, notes[] }>
 
   if (docOrOptions?.document) {
     // Hydrate from existing CSAF document
@@ -29,6 +29,12 @@ export const createVexDocument = (docOrOptions, { publisher } = {}) => {
           (vuln.threats ?? [])
             .filter((t) => t.category === 'impact')
             .map((t) => [t.details, new Set(t.product_ids)])
+        ),
+        flags: new Map(
+          (vuln.flags ?? []).map((f) => [f.label, new Set(f.product_ids)])
+        ),
+        remediations: new Map(
+          (vuln.remediations ?? []).map((r) => [`${r.category}\t${r.details}`, { category: r.category, details: r.details, ids: new Set(r.product_ids) }])
         ),
         notes: vuln.notes ?? []
       });
@@ -56,7 +62,7 @@ export const createVexDocument = (docOrOptions, { publisher } = {}) => {
 
   const toJson = () => {
     const branches = [...products.values()];
-    const vulns = [...vulnerabilities.entries()].map(([cve, { product_status, threats, notes }]) => {
+    const vulns = [...vulnerabilities.entries()].map(([cve, { product_status, threats, flags, remediations, notes }]) => {
       const ps = {};
       for (const [status, ids] of product_status) {
         if (ids.size > 0) { ps[status] = [...ids]; }
@@ -64,8 +70,16 @@ export const createVexDocument = (docOrOptions, { publisher } = {}) => {
       const threatArr = [...threats.entries()]
         .filter(([, ids]) => ids.size > 0)
         .map(([details, ids]) => ({ category: 'impact', details, product_ids: [...ids] }));
+      const flagArr = [...flags.entries()]
+        .filter(([, ids]) => ids.size > 0)
+        .map(([label, ids]) => ({ label, product_ids: [...ids] }));
+      const remArr = [...remediations.values()]
+        .filter(({ ids }) => ids.size > 0)
+        .map(({ category, details, ids }) => ({ category, details, product_ids: [...ids] }));
       const result = { cve, product_status: ps };
       if (threatArr.length) { result.threats = threatArr; }
+      if (flagArr.length) { result.flags = flagArr; }
+      if (remArr.length) { result.remediations = remArr; }
       if (notes.length) { result.notes = notes; }
       return result;
     });
@@ -84,24 +98,39 @@ export const createVexDocument = (docOrOptions, { publisher } = {}) => {
     });
   };
 
-  const updateVulnerabilityStatus = (cveId, productId, status, justification) => {
+  const updateVulnerabilityStatus = (cveId, productId, status, { justification, label, remediationCategory, remediationDetails } = {}) => {
     let vuln = vulnerabilities.get(cveId);
     if (!vuln) {
-      vuln = { product_status: new Map(), threats: new Map(), notes: [{ category: 'general', title: cveId, text: justification || cveId }] };
+      vuln = { product_status: new Map(), threats: new Map(), flags: new Map(), remediations: new Map(), notes: [{ category: 'general', title: cveId, text: cveId }] };
       vulnerabilities.set(cveId, vuln);
     }
 
-    // Move productId to the correct status bucket
     for (const ids of vuln.product_status.values()) { ids.delete(productId); }
     if (!vuln.product_status.has(status)) { vuln.product_status.set(status, new Set()); }
     vuln.product_status.get(status).add(productId);
 
-    // Remove productId from all threats before re-assigning
-    for (const ids of vuln.threats.values()) { ids.delete(productId); }
+    if (status === 'under_investigation' && justification) {
+      const note = vuln.notes.find((n) => n.category === 'general' && n.title === cveId);
+      if (note) { note.text = justification; }
+    }
 
-    if (justification && status !== 'under_investigation') {
+    for (const ids of vuln.threats.values()) { ids.delete(productId); }
+    if (justification && (status === 'known_not_affected' || status === 'known_affected')) {
       if (!vuln.threats.has(justification)) { vuln.threats.set(justification, new Set()); }
       vuln.threats.get(justification).add(productId);
+    }
+
+    for (const ids of vuln.flags.values()) { ids.delete(productId); }
+    if (label && status === 'known_not_affected') {
+      if (!vuln.flags.has(label)) { vuln.flags.set(label, new Set()); }
+      vuln.flags.get(label).add(productId);
+    }
+
+    for (const rem of vuln.remediations.values()) { rem.ids.delete(productId); }
+    if (remediationCategory && remediationDetails && status === 'fixed') {
+      const key = `${remediationCategory}\t${remediationDetails}`;
+      if (!vuln.remediations.has(key)) { vuln.remediations.set(key, { category: remediationCategory, details: remediationDetails, ids: new Set() }); }
+      vuln.remediations.get(key).ids.add(productId);
     }
   };
 

@@ -25,11 +25,59 @@ export const parseVexComment = (body) => {
     AFFECTED: 'known_affected',
     UNDER_INVESTIGATION: 'under_investigation'
   };
+  const labelMatch = body.match(/^LABEL:\s*(.+)$/m);
+  const remediationMatch = body.match(/^REMEDIATION:\s*(mitigation|no_fix_planned|none_available|vendor_fix|workaround)\s*[-–]\s*(.+)$/im);
   return {
     productIds: productMatch[1].split(',').map((s) => s.trim()).filter(Boolean),
     status: statusMap[statusMatch[1].toUpperCase()],
-    justification: statusMatch[2].trim()
+    justification: statusMatch[2].trim(),
+    label: labelMatch?.[1].trim() ?? null,
+    remediationCategory: remediationMatch?.[1].toLowerCase() ?? null,
+    remediationDetails: remediationMatch?.[2].trim() ?? null
   };
+};
+
+const VALID_LABELS = new Set([
+  'component_not_present',
+  'vulnerable_code_not_present',
+  'vulnerable_code_not_in_execute_path',
+  'vulnerable_code_cannot_be_controlled_by_adversary',
+  'inline_mitigations_already_exist'
+]);
+
+const VALID_REMEDIATION_CATEGORIES = new Set([
+  'mitigation', 'no_fix_planned', 'none_available', 'vendor_fix', 'workaround'
+]);
+
+export const validateVexComment = (body) => {
+  if (!body) { return null; }
+  const looksLikeVex = (/^PRODUCT:/m).test(body) || (/^VEX:/im).test(body);
+  if (!looksLikeVex) { return null; }
+
+  const parsed = parseVexComment(body);
+  if (!parsed) {
+    const vexLine = body.match(/^VEX:\s*(.+)$/im)?.[1];
+    if (vexLine) {
+      const badStatus = vexLine.split(/[\s-–]/)[0];
+      return { error: `Invalid VEX status \`${badStatus}\`. Valid assessment statuses are \`NOT_AFFECTED\`, \`FIXED\`, \`AFFECTED\`.` };
+    }
+    return { error: 'Could not parse VEX comment. Ensure it has a `PRODUCT:` line and a `VEX: <STATUS> - <justification>` line.' };
+  }
+
+  if (parsed.status === 'under_investigation') {
+    return { error: '`UNDER_INVESTIGATION` is the initial status and cannot be set via comment. Use `NOT_AFFECTED`, `FIXED`, or `AFFECTED`.' };
+  }
+
+  if (parsed.label !== null && !VALID_LABELS.has(parsed.label)) {
+    return { error: `Invalid LABEL \`${parsed.label}\`. Valid labels: ${[...VALID_LABELS].map((l) => `\`${l}\``).join(', ')}.` };
+  }
+
+  if ((/^REMEDIATION:/im).test(body) && (!parsed.remediationCategory || !VALID_REMEDIATION_CATEGORIES.has(parsed.remediationCategory))) {
+    const badCategory = body.match(/^REMEDIATION:\s*(\S+)/im)?.[1];
+    return { error: `Invalid REMEDIATION category \`${badCategory}\`. Valid categories: \`mitigation\`, \`no_fix_planned\`, \`none_available\`, \`vendor_fix\`, \`workaround\`.` };
+  }
+
+  return parsed;
 };
 
 /**
@@ -73,14 +121,45 @@ ${imageTable}
 
 ## How to assess
 
-Add one or more comments with assessments, then close the issue. Each comment should have exactly one VEX status and justification for one or more product IDs. The VEX document will be updated automatically.
+Add one or more comments with assessments, then close the issue. Each comment must have exactly one \`PRODUCT:\` and one \`VEX:\` line. The VEX document will be updated automatically.
 
+For \`NOT_AFFECTED\` — include a machine-readable \`LABEL:\`:
 \`\`\`
 PRODUCT: <product ID>, <product ID>, ...
 VEX: NOT_AFFECTED - <justification>
+LABEL: <label>
 \`\`\`
 
-Valid statuses: \`NOT_AFFECTED\`, \`FIXED\`, \`AFFECTED\`, \`UNDER_INVESTIGATION\`
+| Label | Meaning |
+|---|---|
+| \`component_not_present\` | The vulnerable component is not included in the product |
+| \`vulnerable_code_not_present\` | The vulnerable code is absent from this build |
+| \`vulnerable_code_not_in_execute_path\` | Vulnerable code exists but is never executed |
+| \`vulnerable_code_cannot_be_controlled_by_adversary\` | Attacker cannot reach the vulnerable code path |
+| \`inline_mitigations_already_exist\` | Built-in mitigations prevent exploitation |
+
+For \`FIXED\` — include a \`REMEDIATION:\` line:
+\`\`\`
+PRODUCT: <product ID>, <product ID>, ...
+VEX: FIXED - <justification>
+REMEDIATION: <category> - <details>
+\`\`\`
+
+| Category | Meaning |
+|---|---|
+| \`vendor_fix\` | An official fix has been released |
+| \`workaround\` | A workaround exists but no fix yet |
+| \`mitigation\` | A mitigation reduces the risk |
+| \`none_available\` | No fix or workaround is currently available |
+| \`no_fix_planned\` | The vendor does not intend to fix this |
+
+For \`AFFECTED\`:
+\`\`\`
+PRODUCT: <product ID>, <product ID>, ...
+VEX: AFFECTED - <impact description>
+\`\`\`
+
+All images in this issue are currently \`UNDER_INVESTIGATION\`. Valid assessment statuses: \`NOT_AFFECTED\`, \`FIXED\`, \`AFFECTED\`
 
 <!-- VEX_META
 ${JSON.stringify({ paths, packages, referenceUrl: url, pkgFileLocation })}
@@ -252,21 +331,32 @@ export const createGithubVexRepo = (token) => {
     });
   };
 
-  const getAssessmentComments = async ({ owner, repo, issueNumber }, assessments = new Map(), page = 1) => {
+  const getAssessmentComments = async ({ owner, repo, issueNumber }, state = { assessments: new Map(), errors: [] }, page = 1) => {
     const { data: comments } = await octokit.issues.listComments({
       owner, repo, issue_number: issueNumber, per_page: 100, page
     });
     for (const comment of comments) {
-      const parsed = parseVexComment(comment.body);
-      if (!parsed) { continue; }
-      for (const productId of parsed.productIds) {
-        assessments.set(productId, { productId, status: parsed.status, justification: parsed.justification });
+      const result = validateVexComment(comment.body);
+      if (!result) { continue; }
+      if (result.error) {
+        state.errors.push({ error: result.error, body: comment.body, url: comment.html_url });
+        continue;
+      }
+      for (const productId of result.productIds) {
+        state.assessments.set(productId, {
+          productId,
+          status: result.status,
+          justification: result.justification,
+          label: result.label,
+          remediationCategory: result.remediationCategory,
+          remediationDetails: result.remediationDetails
+        });
       }
     }
-    if (comments.length < 100) { return [...assessments.values()]; }
+    if (comments.length < 100) { return { assessments: [...state.assessments.values()], errors: state.errors }; }
     await sleep(1000);
     // lord help us if we have more than 100 comments on a single issue, but let's handle it anyway.
-    return getAssessmentComments({ owner, repo, issueNumber }, assessments, page + 1);
+    return getAssessmentComments({ owner, repo, issueNumber }, state, page + 1);
   };
 
   const addLabels = async ({ owner, repo, issueNumber, labels }) => {
