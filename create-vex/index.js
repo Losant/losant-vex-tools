@@ -171,7 +171,7 @@ const run = async () => {
     // New CVE for this product version — carry forward from previous if possible
     const prevSnapshot = previousStatusMap.get(cveId);
     let newStatus = 'under_investigation';
-    let vulnerabilityInfo = {}
+    const vulnerabilityInfo = {};
 
     if (prevSnapshot?.status === 'known_not_affected') {
       newStatus = 'known_not_affected';
@@ -183,7 +183,7 @@ const run = async () => {
       vulnerabilityInfo.remediationCategory = prevSnapshot.remediationCategory;
       vulnerabilityInfo.remediationDetails = prevSnapshot.remediationDetails;
     } else if (!prevSnapshot?.status || prevSnapshot?.status === 'under_investigation') {
-      vulnerabilityInfo.justification = prevSnapshot?.justification || '' // TODO add URL (preferred) to CVE or description here
+      vulnerabilityInfo.justification = prevSnapshot?.justification || ''; // TODO add URL (preferred) to CVE or description here
     }
 
     vexDoc.updateVulnerabilityStatus(cveId, currentProductId, newStatus, vulnerabilityInfo);
