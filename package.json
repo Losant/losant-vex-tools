@@ -1,0 +1,52 @@
+{
+  "name": "losant-vex-tools",
+  "version": "1.0.0",
+  "description": "Github Actions and libraries to create / triage vulnerabilities",
+  "homepage": "https://github.com/Losant/losant-vex-tools#readme",
+  "bugs": {
+    "url": "https://github.com/Losant/losant-vex-tools/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Losant/losant-vex-tools.git"
+  },
+  "license": "MIT",
+  "author": "Losant <hello@losant.com>",
+  "packageManager": "pnpm@12.4.2",
+  "engines": {
+    "node": ">=24"
+  },
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./csaf": "./src/csaf.js",
+    "./github": "./src/github.js",
+    "./src/csaf": "./src/csaf.js",
+    "./src/github": "./src/github.js"
+  },
+  "scripts": {
+    "setup": "husky",
+    "build:action": "ncc build issue-vex-assertions/index.js -o issue-vex-assertions/dist --license licenses.txt",
+    "test": "mocha 'test/**/*.spec.js'",
+    "lint": "eslint .",
+    "lint:changed": "lint-staged"
+  },
+  "lint-staged": {
+    "*.js": "eslint"
+  },
+  "dependencies": {
+    "@octokit/auth-app": "^8.3.1",
+    "@octokit/rest": "^20.1.2",
+    "omnibelt": "^4.1.0"
+  },
+  "devDependencies": {
+    "@losant/eslint-config-losant": "^2.1.0",
+    "@vercel/ncc": "^0.38.4",
+    "eslint": "^10.10.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.5.1",
+    "mocha": "^11.8.0",
+    "should": "^13.2.3"
+  }
+}
