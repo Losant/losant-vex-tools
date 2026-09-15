@@ -17,21 +17,21 @@ const meetsMinSeverity = (severity, minSeverity) => {
   return sevIdx !== -1 && minIdx !== -1 && sevIdx <= minIdx;
 };
 
+const AV_MAP = { N: 'NETWORK', A: 'ADJACENT', L: 'LOCAL', P: 'PHYSICAL' };
+const AC_MAP = { L: 'LOW', H: 'HIGH' };
+const PR_MAP = { N: 'NONE', L: 'LOW', H: 'HIGH' };
+const UI_MAP = { N: 'NONE', R: 'REQUIRED' };
 const parseCvssVector = (cvssObj) => {
   const v3 = cvssObj?.nvd?.V3Vector ?? cvssObj?.redhat?.V3Vector ?? null;
   const score = cvssObj?.nvd?.V3Score ?? cvssObj?.redhat?.V3Score ?? null;
   if (!v3 || score == null) { return null; }
   const parts = Object.fromEntries(v3.split('/').slice(1).map((p) => p.split(':')));
-  const avMap = { N: 'NETWORK', A: 'ADJACENT', L: 'LOCAL', P: 'PHYSICAL' };
-  const acMap = { L: 'LOW', H: 'HIGH' };
-  const prMap = { N: 'NONE', L: 'LOW', H: 'HIGH' };
-  const uiMap = { N: 'NONE', R: 'REQUIRED' };
   return {
     score,
-    attackVector: avMap[parts.AV] ?? parts.AV,
-    attackComplexity: acMap[parts.AC] ?? parts.AC,
-    privilegesRequired: prMap[parts.PR] ?? parts.PR,
-    userInteraction: uiMap[parts.UI] ?? parts.UI
+    attackVector: AV_MAP[parts.AV] ?? parts.AV,
+    attackComplexity: AC_MAP[parts.AC] ?? parts.AC,
+    privilegesRequired: PR_MAP[parts.PR] ?? parts.PR,
+    userInteraction: UI_MAP[parts.UI] ?? parts.UI
   };
 };
 
@@ -108,9 +108,7 @@ const run = async () => {
   const currentDoc = currentVexResult?.doc ?? null;
   const currentSha = currentVexResult?.sha ?? null;
 
-  const vexDoc = currentDoc
-    ? createVexDocument(currentDoc)
-    : createVexDocument({ title: `${packageName} ${latestTag.name} VEX`, id: `${packageName}-${latestTag.name}` });
+  const vexDoc = createVexDocument(currentDoc || { title: `${packageName} ${latestTag.name} VEX`, id: `${packageName}-${latestTag.name}` });
 
   // Read previous tag's VEX for carry-forward
   const prevVexResult = prevVexPath ? await ghRepo.readVexFile({ owner: vexOwner, repo: vexRepo, path: prevVexPath }) : null;
@@ -124,7 +122,15 @@ const run = async () => {
       const status = prevVexDoc.getCveProductStatus(vuln.cve, previousProductId);
       if (!status) { continue; }
       const justification = prevVexDoc.getCveJustification(vuln.cve, previousProductId);
-      previousStatusMap.set(vuln.cve, { status, justification });
+      const flag = (vuln.flags ?? []).find((f) => f.product_ids?.includes(previousProductId));
+      const remediation = (vuln.remediations ?? []).find((r) => r.product_ids?.includes(previousProductId));
+      previousStatusMap.set(vuln.cve, {
+        status,
+        justification,
+        label: flag?.label ?? null,
+        remediationCategory: remediation?.category ?? null,
+        remediationDetails: remediation?.details ?? null
+      });
     }
   }
 
@@ -157,38 +163,40 @@ const run = async () => {
     const existingStatus = vexDoc.getCveProductStatus(cveId, currentProductId);
 
     if (existingStatus !== null) {
-      if (existingStatus === 'under_investigation') {
-        // Still present, still being triaged — remove from previousStatusMap to avoid false "fixed"
-        previousStatusMap.delete(cveId);
-      }
-      // non-null and not under_investigation = human-set status, leave it alone
+      // non-null = human-set status (or under_investigation), leave it alone
+      previousStatusMap.delete(cveId);
       continue;
     }
 
     // New CVE for this product version — carry forward from previous if possible
     const prevSnapshot = previousStatusMap.get(cveId);
     let newStatus = 'under_investigation';
-    let justification = null;
+    let vulnerabilityInfo = {}
 
     if (prevSnapshot?.status === 'known_not_affected') {
       newStatus = 'known_not_affected';
-      justification = prevSnapshot.justification;
+      vulnerabilityInfo.justification = prevSnapshot.justification;
+      vulnerabilityInfo.label = prevSnapshot.label;
     } else if (prevSnapshot?.status === 'known_affected') {
       newStatus = 'known_affected';
-      justification = prevSnapshot.justification;
+      vulnerabilityInfo.justification = prevSnapshot.justification;
+      vulnerabilityInfo.remediationCategory = prevSnapshot.remediationCategory;
+      vulnerabilityInfo.remediationDetails = prevSnapshot.remediationDetails;
+    } else if (!prevSnapshot?.status || prevSnapshot?.status === 'under_investigation') {
+      vulnerabilityInfo.justification = prevSnapshot?.justification || '' // TODO add URL (preferred) to CVE or description here
     }
 
-    vexDoc.updateVulnerabilityStatus(cveId, currentProductId, newStatus, justification);
+    vexDoc.updateVulnerabilityStatus(cveId, currentProductId, newStatus, vulnerabilityInfo);
+    previousStatusMap.delete(cveId);
   }
 
   // CVEs from previous version no longer detected by Trivy → fixed in this version
   for (const [cveId, prevSnapshot] of previousStatusMap) {
     if (!['under_investigation', 'known_affected'].includes(prevSnapshot.status)) { continue; }
-    if (trivyResults.has(cveId)) { continue; }
 
     const existingStatus = vexDoc.getCveProductStatus(cveId, currentProductId);
     if (existingStatus === null || existingStatus === 'under_investigation') {
-      vexDoc.updateVulnerabilityStatus(cveId, currentProductId, 'fixed');
+      vexDoc.updateVulnerabilityStatus(cveId, currentProductId, 'fixed', { remediationCategory: 'vendor_fix', remediationDetails: 'no longer reporting' });
     }
   }
 
