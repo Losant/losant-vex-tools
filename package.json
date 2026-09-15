@@ -12,7 +12,7 @@
   },
   "license": "MIT",
   "author": "Losant <hello@losant.com>",
-  "packageManager": "pnpm@11.20.0",
+  "packageManager": "pnpm@12.4.2",
   "engines": {
     "node": ">=24"
   },
@@ -35,12 +35,12 @@
   },
   "dependencies": {
     "@octokit/auth-app": "^8.3.1",
-    "@octokit/rest": "^20.1.1",
+    "@octokit/rest": "^20.1.2",
     "omnibelt": "^4.1.0"
   },
   "devDependencies": {
     "@losant/eslint-config-losant": "^2.1.0",
-    "@vercel/ncc": "^0.38.3",
+    "@vercel/ncc": "^0.38.4",
     "eslint": "^10.10.0",
     "husky": "^9.1.7",
     "lint-staged": "^17.5.1",
