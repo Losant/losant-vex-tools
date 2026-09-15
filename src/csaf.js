@@ -11,7 +11,7 @@ const DEFAULT_PUBLISHER = {
 export const createVexDocument = (docOrOptions, { publisher } = {}) => {
   let meta;
   const products = new Map(); // Map<product_id, branch entry>
-  const vulnerabilities = new Map(); // Map<cveId, { product_status, threats: Map<details, Set>, flags: Map<label, Set>, remediations: Map<"cat\tdetails", {category, details, ids: Set}>, notes[] }>
+  const vulnerabilities = new Map(); // Map<cveId, { product_status: Map<status, Set>, threats: Map<"cat\tdetails", {category, details, ids: Set}>, flags: Map<label, Set>, remediations: Map<"cat\tdetails", {category, details, ids: Set}>, notes[] }>
 
   if (docOrOptions?.document) {
     // Hydrate from existing CSAF document
@@ -26,9 +26,10 @@ export const createVexDocument = (docOrOptions, { publisher } = {}) => {
           Object.entries(vuln.product_status ?? {}).map(([s, ids]) => [s, new Set(ids)])
         ),
         threats: new Map(
-          (vuln.threats ?? [])
-            .filter((t) => t.category === 'impact')
-            .map((t) => [t.details, new Set(t.product_ids)])
+          (vuln.threats ?? []).map((t) => {
+            const category = t.category ?? 'impact';
+            return [`${category}\t${t.details}`, { category, details: t.details, ids: new Set(t.product_ids) }];
+          })
         ),
         flags: new Map(
           (vuln.flags ?? []).map((f) => [f.label, new Set(f.product_ids)])
@@ -67,9 +68,9 @@ export const createVexDocument = (docOrOptions, { publisher } = {}) => {
       for (const [status, ids] of product_status) {
         if (ids.size > 0) { ps[status] = [...ids]; }
       }
-      const threatArr = [...threats.entries()]
-        .filter(([, ids]) => ids.size > 0)
-        .map(([details, ids]) => ({ category: 'impact', details, product_ids: [...ids] }));
+      const threatArr = [...threats.values()]
+        .filter(({ ids }) => ids.size > 0)
+        .map(({ category, details, ids }) => ({ category, details, product_ids: [...ids] }));
       const flagArr = [...flags.entries()]
         .filter(([, ids]) => ids.size > 0)
         .map(([label, ids]) => ({ label, product_ids: [...ids] }));
@@ -116,9 +117,11 @@ export const createVexDocument = (docOrOptions, { publisher } = {}) => {
       if (note) { note.text = justification; }
     }
 
-    clearFrom(vuln.threats);
+    for (const entry of vuln.threats.values()) { entry.ids.delete(productId); }
     if (justification && (status === 'known_not_affected' || status === 'known_affected')) {
-      addTo(vuln.threats, justification);
+      const threatKey = `impact\t${justification}`;
+      if (!vuln.threats.has(threatKey)) { vuln.threats.set(threatKey, { category: 'impact', details: justification, ids: new Set() }); }
+      vuln.threats.get(threatKey).ids.add(productId);
     }
 
     clearFrom(vuln.flags);

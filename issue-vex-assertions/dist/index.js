@@ -31104,7 +31104,7 @@ __nccwpck_require__.a(__webpack_module__, async (__webpack_handle_async_dependen
 
 const execFileAsync = (0,util__WEBPACK_IMPORTED_MODULE_2__.promisify)(child_process__WEBPACK_IMPORTED_MODULE_1__.execFile);
 
-const TIMEOUT_MINUTES  = Number(process.env.INPUT_TIMEOUT_MINUTES) || 15;
+const TIMEOUT_MINUTES  = Number(process.env.INPUT_TIMEOUT_MINUTES) || 360;
 const LOOKBACK_MS      = (TIMEOUT_MINUTES + 1) * 60 * 1000;
 const VEX_REPO         = process.env.INPUT_VEX_REPO;
 const GCP_PROJECT      = process.env.INPUT_GCP_PROJECT;
@@ -31113,6 +31113,7 @@ const CLOUD_RUN_REGION = process.env.INPUT_CLOUD_RUN_REGION;
 
 if (!VEX_REPO) { throw new Error('INPUT_VEX_REPO (vex_repo action input) is required'); }
 const [VEX_OWNER, VEX_REPO_NAME] = VEX_REPO.split('/');
+if (!VEX_OWNER || !VEX_REPO_NAME) { throw new Error('INPUT_VEX_REPO must be in "owner/repo" format'); }
 if (!process.env.GITHUB_REPOSITORY) { throw new Error('GITHUB_REPOSITORY env var is required'); }
 const [ISSUES_OWNER, ISSUES_REPO_NAME] = process.env.GITHUB_REPOSITORY.split('/');
 
@@ -31291,7 +31292,7 @@ const DEFAULT_PUBLISHER = {
 const createVexDocument = (docOrOptions, { publisher } = {}) => {
   let meta;
   const products = new Map(); // Map<product_id, branch entry>
-  const vulnerabilities = new Map(); // Map<cveId, { product_status, threats: Map<details, Set>, flags: Map<label, Set>, remediations: Map<"cat\tdetails", {category, details, ids: Set}>, notes[] }>
+  const vulnerabilities = new Map(); // Map<cveId, { product_status: Map<status, Set>, threats: Map<"cat\tdetails", {category, details, ids: Set}>, flags: Map<label, Set>, remediations: Map<"cat\tdetails", {category, details, ids: Set}>, notes[] }>
 
   if (docOrOptions?.document) {
     // Hydrate from existing CSAF document
@@ -31306,9 +31307,10 @@ const createVexDocument = (docOrOptions, { publisher } = {}) => {
           Object.entries(vuln.product_status ?? {}).map(([s, ids]) => [s, new Set(ids)])
         ),
         threats: new Map(
-          (vuln.threats ?? [])
-            .filter((t) => t.category === 'impact')
-            .map((t) => [t.details, new Set(t.product_ids)])
+          (vuln.threats ?? []).map((t) => {
+            const category = t.category ?? 'impact';
+            return [`${category}\t${t.details}`, { category, details: t.details, ids: new Set(t.product_ids) }];
+          })
         ),
         flags: new Map(
           (vuln.flags ?? []).map((f) => [f.label, new Set(f.product_ids)])
@@ -31347,9 +31349,9 @@ const createVexDocument = (docOrOptions, { publisher } = {}) => {
       for (const [status, ids] of product_status) {
         if (ids.size > 0) { ps[status] = [...ids]; }
       }
-      const threatArr = [...threats.entries()]
-        .filter(([, ids]) => ids.size > 0)
-        .map(([details, ids]) => ({ category: 'impact', details, product_ids: [...ids] }));
+      const threatArr = [...threats.values()]
+        .filter(({ ids }) => ids.size > 0)
+        .map(({ category, details, ids }) => ({ category, details, product_ids: [...ids] }));
       const flagArr = [...flags.entries()]
         .filter(([, ids]) => ids.size > 0)
         .map(([label, ids]) => ({ label, product_ids: [...ids] }));
@@ -31396,9 +31398,11 @@ const createVexDocument = (docOrOptions, { publisher } = {}) => {
       if (note) { note.text = justification; }
     }
 
-    clearFrom(vuln.threats);
+    for (const entry of vuln.threats.values()) { entry.ids.delete(productId); }
     if (justification && (status === 'known_not_affected' || status === 'known_affected')) {
-      addTo(vuln.threats, justification);
+      const threatKey = `impact\t${justification}`;
+      if (!vuln.threats.has(threatKey)) { vuln.threats.set(threatKey, { category: 'impact', details: justification, ids: new Set() }); }
+      vuln.threats.get(threatKey).ids.add(productId);
     }
 
     clearFrom(vuln.flags);
@@ -35280,8 +35284,10 @@ const parseIssueMetadata = (issue) => {
   const metaMatch = issue.body?.match(/<!-- VEX_META\n([\s\S]+?)\r?\n-->/);
   if (!metaMatch) { return null; }
   try {
-    const { paths, packages, referenceUrl, pkgFileLocation } = JSON.parse(metaMatch[1]);
-    return { cveId: titleMatch[1], paths: paths ?? {}, packages: packages ?? [], referenceUrl: referenceUrl ?? null, pkgFileLocation: pkgFileLocation ?? null };
+    const { paths, packages, referenceUrl, pkgFileLocation, cvss } = JSON.parse(metaMatch[1]);
+    return {
+      cveId: titleMatch[1], paths: paths ?? {}, packages: packages ?? [], referenceUrl: referenceUrl ?? null, pkgFileLocation: pkgFileLocation ?? null, cvss: cvss ?? null
+    };
   } catch {
     return null;
   }
@@ -35447,7 +35453,7 @@ Use the same remediation categories as for \`FIXED\` above.
 All images in this issue are currently \`UNDER_INVESTIGATION\`. Valid assessment statuses: \`NOT_AFFECTED\`, \`FIXED\`, \`AFFECTED\`
 
 <!-- VEX_META
-${JSON.stringify({ paths, packages, referenceUrl: url, pkgFileLocation })}
+${JSON.stringify({ paths, packages, referenceUrl: url, pkgFileLocation, cvss })}
 -->`;
 };
 
@@ -35477,7 +35483,7 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
   const writeVexFile = async ({
     owner, repo, path, doc, sha, message
   }) => {
-    const content = Buffer.from(JSON.stringify(doc, null, 2)).toString('base64');
+    const content = Buffer.from(`${JSON.stringify(doc, null, 2)}\n`).toString('base64');
     await octokit.repos.createOrUpdateFileContents({
       owner,
       repo,
@@ -35561,8 +35567,11 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
     const existingPackages = meta?.packages ?? [];
     const existingReferenceUrl = meta?.referenceUrl ?? null;
     const existingPkgFileLocation = meta?.pkgFileLocation ?? null;
+    const existingCvss = meta?.cvss ?? null;
     const resolvedReferenceUrl = referenceUrl ?? existingReferenceUrl ?? `https://nvd.nist.gov/vuln/detail/${cveId}`;
     const resolvedPkgFileLocation = pkgFileLocation ?? existingPkgFileLocation;
+    const resolvedCvss = cvss ?? existingCvss;
+    const resolvedPackages = packages.length > 0 ? packages : existingPackages;
 
     // Remove the previous version's path entry when rolling over to a new version.
     let removedOldPath = false;
@@ -35586,11 +35595,12 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
 
     const pkgKey = (p) => `${p.name}@${p.affected}@${p.fixed ?? ''}`;
     const sortPkgs = (pkgs) => [...pkgs].sort((a, b) => pkgKey(a).localeCompare(pkgKey(b)));
-    const packagesChanged = JSON.stringify(sortPkgs(packages)) !== JSON.stringify(sortPkgs(existingPackages));
+    const packagesChanged = JSON.stringify(sortPkgs(resolvedPackages)) !== JSON.stringify(sortPkgs(existingPackages));
     const referenceUrlChanged = resolvedReferenceUrl !== existingReferenceUrl;
     const pkgFileLocationChanged = resolvedPkgFileLocation !== existingPkgFileLocation;
+    const cvssChanged = JSON.stringify(resolvedCvss) !== JSON.stringify(existingCvss);
 
-    const hasChanges = removedOldPath || productsChanged || packagesChanged || referenceUrlChanged || pkgFileLocationChanged || severity !== currentSeverity;
+    const hasChanges = removedOldPath || productsChanged || packagesChanged || referenceUrlChanged || pkgFileLocationChanged || cvssChanged || severity !== currentSeverity;
     if (!hasChanges && !force) { return; }
 
     if (fixedProductIds.length) {
@@ -35612,7 +35622,7 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
       repo,
       issue_number: issue.number,
       body: buildVexIssueBody({
-        cveId, paths, severity, referenceUrl: resolvedReferenceUrl, packages, cvss, pkgFileLocation: resolvedPkgFileLocation
+        cveId, paths, severity, referenceUrl: resolvedReferenceUrl, packages: resolvedPackages, cvss: resolvedCvss, pkgFileLocation: resolvedPkgFileLocation
       })
     });
   };

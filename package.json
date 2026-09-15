@@ -21,7 +21,9 @@
   "exports": {
     ".": "./src/index.js",
     "./csaf": "./src/csaf.js",
-    "./github": "./src/github.js"
+    "./github": "./src/github.js",
+    "./src/csaf": "./src/csaf.js",
+    "./src/github": "./src/github.js"
   },
   "scripts": {
     "setup": "husky",
