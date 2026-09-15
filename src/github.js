@@ -8,8 +8,10 @@ export const parseIssueMetadata = (issue) => {
   const metaMatch = issue.body?.match(/<!-- VEX_META\n([\s\S]+?)\r?\n-->/);
   if (!metaMatch) { return null; }
   try {
-    const { paths, packages, referenceUrl, pkgFileLocation } = JSON.parse(metaMatch[1]);
-    return { cveId: titleMatch[1], paths: paths ?? {}, packages: packages ?? [], referenceUrl: referenceUrl ?? null, pkgFileLocation: pkgFileLocation ?? null };
+    const { paths, packages, referenceUrl, pkgFileLocation, cvss } = JSON.parse(metaMatch[1]);
+    return {
+      cveId: titleMatch[1], paths: paths ?? {}, packages: packages ?? [], referenceUrl: referenceUrl ?? null, pkgFileLocation: pkgFileLocation ?? null, cvss: cvss ?? null
+    };
   } catch {
     return null;
   }
@@ -175,7 +177,7 @@ Use the same remediation categories as for \`FIXED\` above.
 All images in this issue are currently \`UNDER_INVESTIGATION\`. Valid assessment statuses: \`NOT_AFFECTED\`, \`FIXED\`, \`AFFECTED\`
 
 <!-- VEX_META
-${JSON.stringify({ paths, packages, referenceUrl: url, pkgFileLocation })}
+${JSON.stringify({ paths, packages, referenceUrl: url, pkgFileLocation, cvss })}
 -->`;
 };
 
@@ -205,7 +207,7 @@ export const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) =>
   const writeVexFile = async ({
     owner, repo, path, doc, sha, message
   }) => {
-    const content = Buffer.from(JSON.stringify(doc, null, 2)).toString('base64');
+    const content = Buffer.from(`${JSON.stringify(doc, null, 2)}\n`).toString('base64');
     await octokit.repos.createOrUpdateFileContents({
       owner,
       repo,
@@ -289,8 +291,11 @@ export const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) =>
     const existingPackages = meta?.packages ?? [];
     const existingReferenceUrl = meta?.referenceUrl ?? null;
     const existingPkgFileLocation = meta?.pkgFileLocation ?? null;
+    const existingCvss = meta?.cvss ?? null;
     const resolvedReferenceUrl = referenceUrl ?? existingReferenceUrl ?? `https://nvd.nist.gov/vuln/detail/${cveId}`;
     const resolvedPkgFileLocation = pkgFileLocation ?? existingPkgFileLocation;
+    const resolvedCvss = cvss ?? existingCvss;
+    const resolvedPackages = packages.length > 0 ? packages : existingPackages;
 
     // Remove the previous version's path entry when rolling over to a new version.
     let removedOldPath = false;
@@ -314,11 +319,12 @@ export const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) =>
 
     const pkgKey = (p) => `${p.name}@${p.affected}@${p.fixed ?? ''}`;
     const sortPkgs = (pkgs) => [...pkgs].sort((a, b) => pkgKey(a).localeCompare(pkgKey(b)));
-    const packagesChanged = JSON.stringify(sortPkgs(packages)) !== JSON.stringify(sortPkgs(existingPackages));
+    const packagesChanged = JSON.stringify(sortPkgs(resolvedPackages)) !== JSON.stringify(sortPkgs(existingPackages));
     const referenceUrlChanged = resolvedReferenceUrl !== existingReferenceUrl;
     const pkgFileLocationChanged = resolvedPkgFileLocation !== existingPkgFileLocation;
+    const cvssChanged = JSON.stringify(resolvedCvss) !== JSON.stringify(existingCvss);
 
-    const hasChanges = removedOldPath || productsChanged || packagesChanged || referenceUrlChanged || pkgFileLocationChanged || severity !== currentSeverity;
+    const hasChanges = removedOldPath || productsChanged || packagesChanged || referenceUrlChanged || pkgFileLocationChanged || cvssChanged || severity !== currentSeverity;
     if (!hasChanges && !force) { return; }
 
     if (fixedProductIds.length) {
@@ -340,7 +346,7 @@ export const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) =>
       repo,
       issue_number: issue.number,
       body: buildVexIssueBody({
-        cveId, paths, severity, referenceUrl: resolvedReferenceUrl, packages, cvss, pkgFileLocation: resolvedPkgFileLocation
+        cveId, paths, severity, referenceUrl: resolvedReferenceUrl, packages: resolvedPackages, cvss: resolvedCvss, pkgFileLocation: resolvedPkgFileLocation
       })
     });
   };

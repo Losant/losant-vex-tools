@@ -7,7 +7,7 @@ import { createGithubVexRepo, parseIssueMetadata } from '../src/github.js';
 
 const execFileAsync = promisify(execFile);
 
-const TIMEOUT_MINUTES  = Number(process.env.INPUT_TIMEOUT_MINUTES) || 15;
+const TIMEOUT_MINUTES  = Number(process.env.INPUT_TIMEOUT_MINUTES) || 360;
 const LOOKBACK_MS      = (TIMEOUT_MINUTES + 1) * 60 * 1000;
 const VEX_REPO         = process.env.INPUT_VEX_REPO;
 const GCP_PROJECT      = process.env.INPUT_GCP_PROJECT;
@@ -16,6 +16,7 @@ const CLOUD_RUN_REGION = process.env.INPUT_CLOUD_RUN_REGION;
 
 if (!VEX_REPO) { throw new Error('INPUT_VEX_REPO (vex_repo action input) is required'); }
 const [VEX_OWNER, VEX_REPO_NAME] = VEX_REPO.split('/');
+if (!VEX_OWNER || !VEX_REPO_NAME) { throw new Error('INPUT_VEX_REPO must be in "owner/repo" format'); }
 if (!process.env.GITHUB_REPOSITORY) { throw new Error('GITHUB_REPOSITORY env var is required'); }
 const [ISSUES_OWNER, ISSUES_REPO_NAME] = process.env.GITHUB_REPOSITORY.split('/');
 

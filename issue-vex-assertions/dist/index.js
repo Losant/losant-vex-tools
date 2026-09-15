@@ -31094,7 +31094,7 @@ __nccwpck_require__.a(__webpack_module__, async (__webpack_handle_async_dependen
 /* harmony import */ var util__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(39023);
 /* harmony import */ var omnibelt__WEBPACK_IMPORTED_MODULE_3__ = __nccwpck_require__(78957);
 /* harmony import */ var _src_csaf_js__WEBPACK_IMPORTED_MODULE_4__ = __nccwpck_require__(47280);
-/* harmony import */ var _src_github_js__WEBPACK_IMPORTED_MODULE_5__ = __nccwpck_require__(81749);
+/* harmony import */ var _src_github_js__WEBPACK_IMPORTED_MODULE_5__ = __nccwpck_require__(60728);
 
 
 
@@ -31104,7 +31104,7 @@ __nccwpck_require__.a(__webpack_module__, async (__webpack_handle_async_dependen
 
 const execFileAsync = (0,util__WEBPACK_IMPORTED_MODULE_2__.promisify)(child_process__WEBPACK_IMPORTED_MODULE_1__.execFile);
 
-const TIMEOUT_MINUTES  = Number(process.env.INPUT_TIMEOUT_MINUTES) || 15;
+const TIMEOUT_MINUTES  = Number(process.env.INPUT_TIMEOUT_MINUTES) || 360;
 const LOOKBACK_MS      = (TIMEOUT_MINUTES + 1) * 60 * 1000;
 const VEX_REPO         = process.env.INPUT_VEX_REPO;
 const GCP_PROJECT      = process.env.INPUT_GCP_PROJECT;
@@ -31113,6 +31113,7 @@ const CLOUD_RUN_REGION = process.env.INPUT_CLOUD_RUN_REGION;
 
 if (!VEX_REPO) { throw new Error('INPUT_VEX_REPO (vex_repo action input) is required'); }
 const [VEX_OWNER, VEX_REPO_NAME] = VEX_REPO.split('/');
+if (!VEX_OWNER || !VEX_REPO_NAME) { throw new Error('INPUT_VEX_REPO must be in "owner/repo" format'); }
 if (!process.env.GITHUB_REPOSITORY) { throw new Error('GITHUB_REPOSITORY env var is required'); }
 const [ISSUES_OWNER, ISSUES_REPO_NAME] = process.env.GITHUB_REPOSITORY.split('/');
 
@@ -31291,7 +31292,7 @@ const DEFAULT_PUBLISHER = {
 const createVexDocument = (docOrOptions, { publisher } = {}) => {
   let meta;
   const products = new Map(); // Map<product_id, branch entry>
-  const vulnerabilities = new Map(); // Map<cveId, { product_status, threats: Map<details, Set>, flags: Map<label, Set>, remediations: Map<"cat\tdetails", {category, details, ids: Set}>, notes[] }>
+  const vulnerabilities = new Map(); // Map<cveId, { product_status: Map<status, Set>, threats: Map<"cat\tdetails", {category, details, ids: Set}>, flags: Map<label, Set>, remediations: Map<"cat\tdetails", {category, details, ids: Set}>, notes[] }>
 
   if (docOrOptions?.document) {
     // Hydrate from existing CSAF document
@@ -31306,9 +31307,10 @@ const createVexDocument = (docOrOptions, { publisher } = {}) => {
           Object.entries(vuln.product_status ?? {}).map(([s, ids]) => [s, new Set(ids)])
         ),
         threats: new Map(
-          (vuln.threats ?? [])
-            .filter((t) => t.category === 'impact')
-            .map((t) => [t.details, new Set(t.product_ids)])
+          (vuln.threats ?? []).map((t) => {
+            const category = t.category ?? 'impact';
+            return [`${category}\t${t.details}`, { category, details: t.details, ids: new Set(t.product_ids) }];
+          })
         ),
         flags: new Map(
           (vuln.flags ?? []).map((f) => [f.label, new Set(f.product_ids)])
@@ -31347,9 +31349,9 @@ const createVexDocument = (docOrOptions, { publisher } = {}) => {
       for (const [status, ids] of product_status) {
         if (ids.size > 0) { ps[status] = [...ids]; }
       }
-      const threatArr = [...threats.entries()]
-        .filter(([, ids]) => ids.size > 0)
-        .map(([details, ids]) => ({ category: 'impact', details, product_ids: [...ids] }));
+      const threatArr = [...threats.values()]
+        .filter(({ ids }) => ids.size > 0)
+        .map(({ category, details, ids }) => ({ category, details, product_ids: [...ids] }));
       const flagArr = [...flags.entries()]
         .filter(([, ids]) => ids.size > 0)
         .map(([label, ids]) => ({ label, product_ids: [...ids] }));
@@ -31396,9 +31398,11 @@ const createVexDocument = (docOrOptions, { publisher } = {}) => {
       if (note) { note.text = justification; }
     }
 
-    clearFrom(vuln.threats);
+    for (const entry of vuln.threats.values()) { entry.ids.delete(productId); }
     if (justification && (status === 'known_not_affected' || status === 'known_affected')) {
-      addTo(vuln.threats, justification);
+      const threatKey = `impact\t${justification}`;
+      if (!vuln.threats.has(threatKey)) { vuln.threats.set(threatKey, { category: 'impact', details: justification, ids: new Set() }); }
+      vuln.threats.get(threatKey).ids.add(productId);
     }
 
     clearFrom(vuln.flags);
@@ -31456,7 +31460,7 @@ const createVexDocument = (docOrOptions, { publisher } = {}) => {
 
 /***/ }),
 
-/***/ 81749:
+/***/ 60728:
 /***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __nccwpck_require__) => {
 
 
@@ -31831,26 +31835,50 @@ function withDefaults(oldDefaults, newDefaults) {
 var endpoint = withDefaults(null, DEFAULTS);
 
 
-;// CONCATENATED MODULE: ./node_modules/.pnpm/content-type@3.0.0/node_modules/content-type/dist/index.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/content-type@3.1.0/node_modules/content-type/dist/index.js
 /*!
  * content-type
  * Copyright(c) 2015 Douglas Christopher Wilson
  * MIT Licensed
  */
-const TEXT_REGEXP = /^[\u0009\u0020-\u007e\u0080-\u00ff]*$/;
-const TOKEN_REGEXP = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const SP = 32; // " "
+const HTAB = 9; // "\t"
+const SEMI = 59; // ";"
+const EQ = 61; // "="
+const DQUOTE = 34; // '"'
+const BSLASH = 92; // "\\"
+const COMMA = 44; // ","
+const LOWER_CASE = 1;
+const OWS = 2;
+const SEMI_FLAG = 4;
+const COMMA_FLAG = 8;
+const TOKEN_FLAG = 16;
+const NON_ASCII = 0xff00;
+const CASE_FLAGS = LOWER_CASE | NON_ASCII;
 /**
- * RegExp to match chars that must be quoted-pair in RFC 9110 sec 5.6.4
+ * Character flags used to normalize HTTP field values while scanning.
+ * Out-of-range reads intentionally coerce to zero in bitwise expressions.
  */
-const QUOTE_REGEXP = /[\\"]/g;
-/**
- * RegExp to match type in RFC 9110 sec 8.3.1
- *
- * media-type = type "/" subtype
- * type       = token
- * subtype    = token
- */
-const TYPE_REGEXP = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const CHAR_MAP = new Uint8Array(0x100);
+CHAR_MAP[HTAB] |= OWS;
+CHAR_MAP[SP] |= OWS;
+CHAR_MAP[SEMI] |= SEMI_FLAG;
+CHAR_MAP[COMMA] |= COMMA_FLAG;
+for (let code = 0x80 /* non-ASCII */; code <= 0xff; code++) {
+    CHAR_MAP[code] |= LOWER_CASE;
+}
+for (const char of "!#$%&'*+-.^_`|~") {
+    CHAR_MAP[char.charCodeAt(0)] |= TOKEN_FLAG;
+}
+for (let code = 0x30 /* 0 */; code <= 0x39 /* 9 */; code++) {
+    CHAR_MAP[code] |= TOKEN_FLAG;
+}
+for (let code = 0x41 /* A */; code <= 0x5a /* Z */; code++) {
+    CHAR_MAP[code] |= LOWER_CASE | TOKEN_FLAG;
+}
+for (let code = 0x61 /* a */; code <= 0x7a /* z */; code++) {
+    CHAR_MAP[code] |= TOKEN_FLAG;
+}
 /**
  * Null object perf optimization. Faster than `Object.create(null)` and `{ __proto__: null }`.
  */
@@ -31860,20 +31888,85 @@ const NullObject = /* @__PURE__ */ (() => {
     return C;
 })();
 /**
+ * Validate a type string against RFC 9110.
+ */
+function isTypeValid(type) {
+    const len = type.length;
+    let hasSlash = false;
+    for (let index = 0; index < len; index++) {
+        const code = type.charCodeAt(index);
+        if (code === 47 /* / */) {
+            if (hasSlash || index === 0 || index === len - 1)
+                return false;
+            hasSlash = true;
+        }
+        else if (!isTokenCode(code)) {
+            return false;
+        }
+    }
+    return hasSlash;
+}
+/**
+ * Validate a token against RFC 9110.
+ */
+function isTokenValid(name) {
+    const len = name.length;
+    if (len === 0)
+        return false;
+    for (let index = 0; index < len; index++) {
+        if (!isTokenCode(name.charCodeAt(index)))
+            return false;
+    }
+    return true;
+}
+/**
+ * Check whether a character code belongs to the token production in RFC 9110.
+ */
+function isTokenCode(code) {
+    return (CHAR_MAP[code] & TOKEN_FLAG) !== 0;
+}
+/**
+ * Serialize a parameter value.
+ */
+function parameterValue(str) {
+    const len = str.length;
+    if (len === 0)
+        return '""';
+    let index = 0;
+    while (index < len && isTokenCode(str.charCodeAt(index)))
+        index++;
+    if (index === len)
+        return str;
+    let result = '"';
+    let start = 0;
+    while (index < len) {
+        const code = str.charCodeAt(index);
+        if (code !== HTAB && (code < SP || code === 127 || code > 255)) {
+            throw new TypeError(`Invalid parameter value: ${str}`);
+        }
+        if (code === 34 /* " */ || code === 92 /* \\ */) {
+            result += `${str.slice(start, index)}\\`;
+            start = index;
+        }
+        index++;
+    }
+    return `${result}${str.slice(start)}"`;
+}
+/**
  * Format an object into a `Content-Type` header.
  */
 function format(obj) {
     const { type, parameters } = obj;
-    if (!type || !TYPE_REGEXP.test(type)) {
+    if (!type || !isTypeValid(type)) {
         throw new TypeError(`Invalid type: ${type}`);
     }
     let result = type;
     if (parameters) {
         for (const param of Object.keys(parameters)) {
-            if (!TOKEN_REGEXP.test(param)) {
+            if (!isTokenValid(param)) {
                 throw new TypeError(`Invalid parameter name: ${param}`);
             }
-            result += `; ${param}=${qstring(parameters[param])}`;
+            result += `; ${param}=${parameterValue(parameters[param])}`;
         }
     }
     return result;
@@ -31882,126 +31975,158 @@ function format(obj) {
  * Parse a `Content-Type` header.
  */
 function dist_parse(header, options) {
-    const stopChar = options?.comma === true ? COMMA : 65_536; // Sentinel for "no stop char".
+    const stopFlags = SEMI_FLAG | (options?.comma === true ? COMMA_FLAG : 0);
     const len = header.length;
-    let index = skipOWS(header, options?.start ?? 0, len);
-    const valueStart = index;
-    index = skipValue(header, index, len, stopChar);
-    const valueEnd = trailingOWS(header, valueStart, index);
-    const type = header.slice(valueStart, valueEnd).toLowerCase();
-    if (options?.parameters === false) {
+    let valueStart = options?.start ?? 0;
+    while ((CHAR_MAP[header.charCodeAt(valueStart)] & OWS) !== 0) {
+        valueStart++;
+    }
+    let index = valueStart;
+    let typeFlags = 0;
+    let whitespace = -1;
+    let stop = options?.parameters === false ? COMMA_FLAG : 0;
+    while (index < len) {
+        const code = header.charCodeAt(index);
+        const flags = CHAR_MAP[code];
+        if ((flags & stopFlags) !== 0) {
+            stop |= flags & COMMA_FLAG;
+            break;
+        }
+        if ((flags & OWS) !== 0) {
+            if (whitespace === -1)
+                whitespace = index;
+        }
+        else {
+            whitespace = -1;
+        }
+        typeFlags |= (code & NON_ASCII) | flags;
+        index++;
+    }
+    const valueEnd = whitespace === -1 ? index : whitespace;
+    const value = header.slice(valueStart, valueEnd);
+    const type = (typeFlags & CASE_FLAGS) === 0 ? value : value.toLowerCase();
+    if (index === len || stop !== 0) {
         return { type, index, parameters: new NullObject() };
     }
-    return parseParameters(header, type, index, len, stopChar);
+    return parseParameters(header, type, index, len, stopFlags);
 }
-const SP = 32; // " "
-const HTAB = 9; // "\t"
-const SEMI = 59; // ";"
-const EQ = 61; // "="
-const DQUOTE = 34; // '"'
-const BSLASH = 92; // "\\"
-const COMMA = 44; // ","
 /**
  * Parses the parameters of a `Content-Type` header starting at the given index.
  */
-function parseParameters(header, type, index, len, stopChar) {
+function parseParameters(header, type, index, len, stopFlags) {
     const parameters = new NullObject();
     parameter: while (index < len) {
-        if (header.charCodeAt(index) === stopChar)
-            break;
-        index = skipOWS(header, index + 1 /* Skip over ; */, len);
+        index++; // Skip over ;
+        while ((CHAR_MAP[header.charCodeAt(index)] & OWS) !== 0) {
+            index++;
+        }
         const keyStart = index;
+        let keyFlags = 0;
+        let keyWhitespace = -1;
         while (index < len) {
             const code = header.charCodeAt(index);
-            if (code === stopChar)
-                break parameter;
-            if (code === SEMI)
+            const flags = CHAR_MAP[code];
+            if ((flags & stopFlags) !== 0) {
+                if ((flags & COMMA_FLAG) !== 0)
+                    break parameter;
                 continue parameter;
+            }
             if (code === EQ) {
-                const keyEnd = trailingOWS(header, keyStart, index);
-                const key = header.slice(keyStart, keyEnd).toLowerCase();
-                index = skipOWS(header, index + 1, len);
-                if (index < len && header.charCodeAt(index) === DQUOTE) {
+                const keyEnd = keyWhitespace === -1 ? index : keyWhitespace;
+                const value = header.slice(keyStart, keyEnd);
+                const key = (keyFlags & CASE_FLAGS) === 0 ? value : value.toLowerCase();
+                index++;
+                while ((CHAR_MAP[header.charCodeAt(index)] & OWS) !== 0) {
                     index++;
-                    let value = "";
+                }
+                if (index < len && header.charCodeAt(index) === DQUOTE) {
+                    const quotedStart = ++index;
+                    let escaped = false;
                     while (index < len) {
-                        const code = header.charCodeAt(index++);
+                        const code = header.charCodeAt(index);
                         if (code === DQUOTE) {
-                            index = skipValue(header, index, len, stopChar);
-                            if (parameters[key] === undefined)
-                                parameters[key] = value;
-                            break;
+                            if (parameters[key] === undefined) {
+                                parameters[key] = escaped
+                                    ? unescapeQuotedPairs(header, quotedStart, index)
+                                    : header.slice(quotedStart, index);
+                            }
+                            index++;
+                            let stop = 0;
+                            // Discard characters between quote and delimiter.
+                            while (index < len) {
+                                const code = header.charCodeAt(index);
+                                const flags = CHAR_MAP[code];
+                                if ((flags & stopFlags) !== 0) {
+                                    stop = flags & COMMA_FLAG;
+                                    break;
+                                }
+                                index++;
+                            }
+                            if (stop !== 0)
+                                break parameter;
+                            continue parameter;
                         }
-                        if (code === BSLASH && index < len) {
-                            value += header[index++];
+                        if (code === BSLASH && index + 1 < len) {
+                            escaped = true;
+                            index += 2;
                             continue;
                         }
-                        value += String.fromCharCode(code);
+                        index++;
                     }
                     continue parameter;
                 }
                 const valueStart = index;
-                index = skipValue(header, index, len, stopChar);
+                let stop = 0;
+                let valueWhitespace = -1;
+                while (index < len) {
+                    const code = header.charCodeAt(index);
+                    const flags = CHAR_MAP[code];
+                    if ((flags & stopFlags) !== 0) {
+                        stop = flags & COMMA_FLAG;
+                        break;
+                    }
+                    if ((flags & OWS) !== 0) {
+                        if (valueWhitespace === -1)
+                            valueWhitespace = index;
+                    }
+                    else {
+                        valueWhitespace = -1;
+                    }
+                    index++;
+                }
                 if (parameters[key] === undefined) {
-                    const valueEnd = trailingOWS(header, valueStart, index);
+                    const valueEnd = valueWhitespace === -1 ? index : valueWhitespace;
                     parameters[key] = header.slice(valueStart, valueEnd);
                 }
+                if (stop !== 0)
+                    break parameter;
                 continue parameter;
             }
+            if ((flags & OWS) !== 0) {
+                if (keyWhitespace === -1)
+                    keyWhitespace = index;
+            }
+            else {
+                keyWhitespace = -1;
+            }
+            keyFlags |= (code & NON_ASCII) | flags;
             index++;
         }
     }
     return { type, index, parameters };
 }
 /**
- * Skip over characters until a semicolon or other exit character.
+ * Remove backslashes from quoted pairs in a known-terminated quoted string body.
  */
-function skipValue(str, index, len, stopChar) {
-    while (index < len) {
-        const code = str.charCodeAt(index);
-        if (code === SEMI || code === stopChar)
-            break;
-        index++;
+function unescapeQuotedPairs(str, start, end) {
+    let result = "";
+    for (let index = start; index < end; index++) {
+        if (str.charCodeAt(index) === BSLASH) {
+            result += str.slice(start, index);
+            start = ++index;
+        }
     }
-    return index;
-}
-/**
- * Skip optional whitespace (OWS) in an HTTP header value.
- *
- * OWS is defined in RFC 9110 sec 5.6.3 as SP (" ") or HTAB ("\t").
- */
-function skipOWS(header, index, len) {
-    while (index < len) {
-        const char = header.charCodeAt(index);
-        if (char !== SP && char !== HTAB)
-            break;
-        index++;
-    }
-    return index;
-}
-/**
- * Trim optional whitespace (OWS) from the end of a substring.
- *
- * OWS is defined in RFC 9110 sec 5.6.3 as SP (" ") or HTAB ("\t").
- */
-function trailingOWS(header, start, end) {
-    while (end > start) {
-        const char = header.charCodeAt(end - 1);
-        if (char !== SP && char !== HTAB)
-            break;
-        end--;
-    }
-    return end;
-}
-/**
- * Serialize a parameter value.
- */
-function qstring(str) {
-    if (TOKEN_REGEXP.test(str))
-        return str;
-    if (TEXT_REGEXP.test(str))
-        return `"${str.replace(QUOTE_REGEXP, "\\$&")}"`;
-    throw new TypeError(`Invalid parameter value: ${str}`);
+    return result + str.slice(start, end);
 }
 //# sourceMappingURL=index.js.map
 ;// CONCATENATED MODULE: ./node_modules/.pnpm/json-with-bigint@3.5.12/node_modules/json-with-bigint/json-with-bigint.js
@@ -35169,8 +35294,10 @@ const parseIssueMetadata = (issue) => {
   const metaMatch = issue.body?.match(/<!-- VEX_META\n([\s\S]+?)\r?\n-->/);
   if (!metaMatch) { return null; }
   try {
-    const { paths, packages, referenceUrl, pkgFileLocation } = JSON.parse(metaMatch[1]);
-    return { cveId: titleMatch[1], paths: paths ?? {}, packages: packages ?? [], referenceUrl: referenceUrl ?? null, pkgFileLocation: pkgFileLocation ?? null };
+    const { paths, packages, referenceUrl, pkgFileLocation, cvss } = JSON.parse(metaMatch[1]);
+    return {
+      cveId: titleMatch[1], paths: paths ?? {}, packages: packages ?? [], referenceUrl: referenceUrl ?? null, pkgFileLocation: pkgFileLocation ?? null, cvss: cvss ?? null
+    };
   } catch {
     return null;
   }
@@ -35336,7 +35463,7 @@ Use the same remediation categories as for \`FIXED\` above.
 All images in this issue are currently \`UNDER_INVESTIGATION\`. Valid assessment statuses: \`NOT_AFFECTED\`, \`FIXED\`, \`AFFECTED\`
 
 <!-- VEX_META
-${JSON.stringify({ paths, packages, referenceUrl: url, pkgFileLocation })}
+${JSON.stringify({ paths, packages, referenceUrl: url, pkgFileLocation, cvss })}
 -->`;
 };
 
@@ -35366,7 +35493,7 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
   const writeVexFile = async ({
     owner, repo, path, doc, sha, message
   }) => {
-    const content = Buffer.from(JSON.stringify(doc, null, 2)).toString('base64');
+    const content = Buffer.from(`${JSON.stringify(doc, null, 2)}\n`).toString('base64');
     await octokit.repos.createOrUpdateFileContents({
       owner,
       repo,
@@ -35450,8 +35577,11 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
     const existingPackages = meta?.packages ?? [];
     const existingReferenceUrl = meta?.referenceUrl ?? null;
     const existingPkgFileLocation = meta?.pkgFileLocation ?? null;
+    const existingCvss = meta?.cvss ?? null;
     const resolvedReferenceUrl = referenceUrl ?? existingReferenceUrl ?? `https://nvd.nist.gov/vuln/detail/${cveId}`;
     const resolvedPkgFileLocation = pkgFileLocation ?? existingPkgFileLocation;
+    const resolvedCvss = cvss ?? existingCvss;
+    const resolvedPackages = packages.length > 0 ? packages : existingPackages;
 
     // Remove the previous version's path entry when rolling over to a new version.
     let removedOldPath = false;
@@ -35475,11 +35605,12 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
 
     const pkgKey = (p) => `${p.name}@${p.affected}@${p.fixed ?? ''}`;
     const sortPkgs = (pkgs) => [...pkgs].sort((a, b) => pkgKey(a).localeCompare(pkgKey(b)));
-    const packagesChanged = JSON.stringify(sortPkgs(packages)) !== JSON.stringify(sortPkgs(existingPackages));
+    const packagesChanged = JSON.stringify(sortPkgs(resolvedPackages)) !== JSON.stringify(sortPkgs(existingPackages));
     const referenceUrlChanged = resolvedReferenceUrl !== existingReferenceUrl;
     const pkgFileLocationChanged = resolvedPkgFileLocation !== existingPkgFileLocation;
+    const cvssChanged = JSON.stringify(resolvedCvss) !== JSON.stringify(existingCvss);
 
-    const hasChanges = removedOldPath || productsChanged || packagesChanged || referenceUrlChanged || pkgFileLocationChanged || severity !== currentSeverity;
+    const hasChanges = removedOldPath || productsChanged || packagesChanged || referenceUrlChanged || pkgFileLocationChanged || cvssChanged || severity !== currentSeverity;
     if (!hasChanges && !force) { return; }
 
     if (fixedProductIds.length) {
@@ -35501,7 +35632,7 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
       repo,
       issue_number: issue.number,
       body: buildVexIssueBody({
-        cveId, paths, severity, referenceUrl: resolvedReferenceUrl, packages, cvss, pkgFileLocation: resolvedPkgFileLocation
+        cveId, paths, severity, referenceUrl: resolvedReferenceUrl, packages: resolvedPackages, cvss: resolvedCvss, pkgFileLocation: resolvedPkgFileLocation
       })
     });
   };

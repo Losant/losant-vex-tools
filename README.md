@@ -220,7 +220,7 @@ const repo = createGithubVexRepo(process.env.GITHUB_TOKEN);
 | `getClosedVexPendingIssues({ owner, repo, since })` | Paginates all closed issues labeled `vex-pending` closed since the given ISO timestamp. |
 | `getOpenVexCveIssuesMap({ owner, repo })` | Returns a `Map<cveId, issue>` of all open `vex-pending` issues. |
 | `openVexIssue({ owner, repo, cveId, vexPath, productIds, severity, referenceUrl, packages, cvss, pkgFileLocation })` | Opens a new VEX triage issue with a formatted body and the `vex-pending` label. |
-| `updateVexIssue({ owner, repo, issue, cveId, vexPath, productIds, …, force })` | Updates the body of an existing VEX issue when the product list, severity, packages, reference URL, or `pkgFileLocation` changes. Pass `force: true` to rewrite the body even when nothing has changed. Closes the issue automatically if all products are removed. |
+| `updateVexIssue({ owner, repo, issue, cveId, vexPath, productIds, …, force })` | Updates the body of an existing VEX issue when the product list, severity, packages, CVSS, reference URL, or `pkgFileLocation` changes. Pass `force: true` to rewrite the body even when nothing has changed. Closes the issue automatically if all products are removed. |
 | `getAssessmentComments({ owner, repo, issueNumber, allProductIds })` | Returns `{ assessments, errors }`. Reads comments newest-to-oldest; the first valid assessment for each product wins. Stops once all `allProductIds` are covered. `assessments` is `[{ productId, status, justification, label, remediationCategory, remediationDetails }]`. `errors` is `[{ error, body, url }]` for malformed comments whose product IDs were not covered by a newer valid comment. |
 | `markIssueAsReflected({ owner, repo, issue })` | Adds `vex-reflected` and removes `vex-pending` from an issue. |
 | `ensureLabel({ owner, repo, name, color })` | Creates a label if it does not already exist. |
@@ -251,7 +251,7 @@ Valid status values (case-insensitive): `NOT_AFFECTED`, `FIXED`, `AFFECTED`, `UN
 
 ### `parseIssueMetadata(issue)`
 
-Extracts the structured metadata embedded in a VEX issue body by the `<!-- VEX_META … -->` comment block. Returns `{ cveId, paths, packages, referenceUrl, pkgFileLocation }` or `null` if the issue title or body does not match the expected format.
+Extracts the structured metadata embedded in a VEX issue body by the `<!-- VEX_META … -->` comment block. Returns `{ cveId, paths, packages, referenceUrl, pkgFileLocation, cvss }` or `null` if the issue title or body does not match the expected format.
 
 ### `buildVexIssueBody(opts)`
 
@@ -267,7 +267,7 @@ Returns a one-line CVSS summary string (e.g. `CVSS 7.5 · NETWORK · LOW complex
 
 ```sh
 pnpm install
-pnpm setup          # one-time: configures git hooks via husky
+pnpm run setup      # one-time: configures git hooks via husky
 pnpm test
 pnpm build:actions  # compiles all actions to their dist/ directories
 ```
