@@ -35627,11 +35627,14 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
     });
   };
 
-  const getAssessmentComments = async ({ owner, repo, issueNumber, allProductIds }, state = { assessments: new Map(), errors: [] }, page = 1) => {
+  // Reads up to 100 comments (one page). Issues with more than 100 comments are not supported.
+  const getAssessmentComments = async ({ owner, repo, issueNumber, allProductIds }) => {
     const { data: comments } = await octokit.issues.listComments({
-      owner, repo, issue_number: issueNumber, per_page: 100, page, direction: 'desc'
+      owner, repo, issue_number: issueNumber, per_page: 100
     });
-    for (const comment of comments) {
+    // Process newest-first so a later valid comment supersedes an earlier malformed one.
+    const state = { assessments: new Map(), errors: [] };
+    for (const comment of [...comments].reverse()) {
       const prevErrorCount = state.errors.length;
       const result = validateVexComment(comment.body);
       if (!result?.productIds) { continue; }
@@ -35656,9 +35659,7 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
         return { assessments: [...state.assessments.values()], errors: state.errors };
       }
     }
-    if (comments.length < 100) { return { assessments: [...state.assessments.values()], errors: state.errors }; }
-    await (0,src.sleep)(1000);
-    return getAssessmentComments({ owner, repo, issueNumber, allProductIds }, state, page + 1);
+    return { assessments: [...state.assessments.values()], errors: state.errors };
   };
 
   const addLabels = async ({ owner, repo, issueNumber, labels }) => {

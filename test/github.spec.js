@@ -149,23 +149,20 @@ describe('validateVexComment', () => {
 });
 
 describe('getAssessmentComments', () => {
-  const makeRepo = (commentPages) => {
-    let page = 0;
-    return createGithubVexRepo(null, {
-      octokit: {
-        issues: {
-          listComments: async () => ({ data: commentPages[page++] ?? [] })
-        }
+  const makeRepo = (comments) => createGithubVexRepo(null, {
+    octokit: {
+      issues: {
+        listComments: async () => ({ data: comments })
       }
-    });
-  };
+    }
+  });
 
   const comment = (body) => ({ body, html_url: 'https://example.com' });
 
   it('returns assessments from valid comments', async () => {
-    const repo = makeRepo([[
+    const repo = makeRepo([
       comment('PRODUCT: prod:v1\nVEX: NOT_AFFECTED - not reachable')
-    ]]);
+    ]);
     const { assessments, errors } = await repo.getAssessmentComments({ owner: 'o', repo: 'r', issueNumber: 1, allProductIds: ['prod:v1'] });
     assessments.should.have.length(1);
     assessments[0].productId.should.equal('prod:v1');
@@ -174,32 +171,33 @@ describe('getAssessmentComments', () => {
   });
 
   it('newest comment wins when two valid comments assess the same product', async () => {
-    const repo = makeRepo([[
-      comment('PRODUCT: prod:v1\nVEX: FIXED - patched'),
-      comment('PRODUCT: prod:v1\nVEX: NOT_AFFECTED - old reason')
-    ]]);
+    // oldest-first (API order): NOT_AFFECTED posted first, FIXED posted second
+    const repo = makeRepo([
+      comment('PRODUCT: prod:v1\nVEX: NOT_AFFECTED - old reason'),
+      comment('PRODUCT: prod:v1\nVEX: FIXED - patched')
+    ]);
     const { assessments } = await repo.getAssessmentComments({ owner: 'o', repo: 'r', issueNumber: 1, allProductIds: ['prod:v1'] });
     assessments[0].status.should.equal('fixed');
   });
 
   it('does not report an error for an invalid comment when a newer valid comment already assessed that product', async () => {
-    // newest-first: good p2, invalid p2, good p1
-    const repo = makeRepo([[
-      comment('PRODUCT: prod:p2\nVEX: FIXED - patched'),
+    // oldest-first (API order): good p1, invalid p2, good p2 (newest)
+    const repo = makeRepo([
+      comment('PRODUCT: prod:p1\nVEX: NOT_AFFECTED - not reachable'),
       comment('PRODUCT: prod:p2\nVEX: NOT_AFFECTED'),
-      comment('PRODUCT: prod:p1\nVEX: NOT_AFFECTED - not reachable')
-    ]]);
+      comment('PRODUCT: prod:p2\nVEX: FIXED - patched')
+    ]);
     const { assessments, errors } = await repo.getAssessmentComments({ owner: 'o', repo: 'r', issueNumber: 1, allProductIds: ['prod:p1', 'prod:p2'] });
     assessments.should.have.length(2);
     errors.should.have.length(0);
   });
 
   it('reports an error for an invalid comment when the product has no valid assessment', async () => {
-    // newest-first: invalid p2, good p1 — p2 never validly assessed
-    const repo = makeRepo([[
-      comment('PRODUCT: prod:p2\nVEX: NOT_AFFECTED'),
-      comment('PRODUCT: prod:p1\nVEX: NOT_AFFECTED - not reachable')
-    ]]);
+    // oldest-first (API order): good p1, invalid p2 (newest) — p2 never validly assessed
+    const repo = makeRepo([
+      comment('PRODUCT: prod:p1\nVEX: NOT_AFFECTED - not reachable'),
+      comment('PRODUCT: prod:p2\nVEX: NOT_AFFECTED')
+    ]);
     const { assessments, errors } = await repo.getAssessmentComments({ owner: 'o', repo: 'r', issueNumber: 1, allProductIds: ['prod:p1', 'prod:p2'] });
     assessments.should.have.length(1);
     assessments[0].productId.should.equal('prod:p1');
@@ -208,37 +206,14 @@ describe('getAssessmentComments', () => {
   });
 
   it('skips comments with no parseable PRODUCT line', async () => {
-    const repo = makeRepo([[
+    const repo = makeRepo([
       comment('just a regular comment'),
       comment('VEX: NOT_AFFECTED - no product line'),
       comment('PRODUCT: prod:v1\nVEX: FIXED - patched')
-    ]]);
+    ]);
     const { assessments, errors } = await repo.getAssessmentComments({ owner: 'o', repo: 'r', issueNumber: 1, allProductIds: ['prod:v1'] });
     assessments.should.have.length(1);
     errors.should.have.length(0);
-  });
-
-  it('stops reading once all products are covered', async () => {
-    let commentCount = 0;
-    const repo = createGithubVexRepo(null, {
-      octokit: {
-        issues: {
-          listComments: async () => {
-            commentCount++;
-            return {
-              data: [
-                comment('PRODUCT: prod:p1\nVEX: NOT_AFFECTED - ok'),
-                comment('PRODUCT: prod:p2\nVEX: FIXED - patched'),
-                comment('PRODUCT: prod:p3\nVEX: AFFECTED - ongoing')
-              ]
-            };
-          }
-        }
-      }
-    });
-    const { assessments } = await repo.getAssessmentComments({ owner: 'o', repo: 'r', issueNumber: 1, allProductIds: ['prod:p1', 'prod:p2'] });
-    assessments.should.have.length(2);
-    commentCount.should.equal(1);
   });
 });
 
