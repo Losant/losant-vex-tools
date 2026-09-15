@@ -284,6 +284,7 @@ export const createGithubVexRepo = (token) => {
     const existingReferenceUrl = meta?.referenceUrl ?? null;
     const existingPkgFileLocation = meta?.pkgFileLocation ?? null;
     const resolvedReferenceUrl = referenceUrl ?? existingReferenceUrl ?? `https://nvd.nist.gov/vuln/detail/${cveId}`;
+    const resolvedPkgFileLocation = pkgFileLocation ?? existingPkgFileLocation;
 
     // Remove the previous version's path entry when rolling over to a new version.
     let removedOldPath = false;
@@ -309,7 +310,7 @@ export const createGithubVexRepo = (token) => {
     const sortPkgs = (pkgs) => [...pkgs].sort((a, b) => pkgKey(a).localeCompare(pkgKey(b)));
     const packagesChanged = JSON.stringify(sortPkgs(packages)) !== JSON.stringify(sortPkgs(existingPackages));
     const referenceUrlChanged = resolvedReferenceUrl !== existingReferenceUrl;
-    const pkgFileLocationChanged = pkgFileLocation !== existingPkgFileLocation;
+    const pkgFileLocationChanged = resolvedPkgFileLocation !== existingPkgFileLocation;
 
     const hasChanges = removedOldPath || productsChanged || packagesChanged || referenceUrlChanged || pkgFileLocationChanged || severity !== currentSeverity;
     if (!hasChanges && !force) { return; }
@@ -333,7 +334,7 @@ export const createGithubVexRepo = (token) => {
       repo,
       issue_number: issue.number,
       body: buildVexIssueBody({
-        cveId, paths, severity, referenceUrl: resolvedReferenceUrl, packages, cvss, pkgFileLocation
+        cveId, paths, severity, referenceUrl: resolvedReferenceUrl, packages, cvss, pkgFileLocation: resolvedPkgFileLocation
       })
     });
   };
