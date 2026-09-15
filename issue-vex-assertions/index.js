@@ -42,21 +42,31 @@ const run = async () => {
 
   await forEachSerialP(async (issue) => {
     const meta = parseIssueMetadata(issue);
-    if (!meta || !Object.keys(meta.paths).length) { return; }
-
+    if (!meta) { return; }
     const allProductIds = Object.values(meta.paths).flat();
-    const assessments = await issuesGhRepo.getAssessmentComments({
-      owner: ISSUES_OWNER, repo: ISSUES_REPO_NAME, issueNumber: issue.number
+    if (!allProductIds.length) { return; }
+    const { assessments, errors } = await issuesGhRepo.getAssessmentComments({
+      owner: ISSUES_OWNER, repo: ISSUES_REPO_NAME, issueNumber: issue.number, allProductIds
     });
 
     const missing = difference(allProductIds, assessments.map((a) => a.productId));
     if (missing.length > 0) {
-      await issuesGhRepo.reopenWithComment({
-        owner: ISSUES_OWNER,
-        repo: ISSUES_REPO_NAME,
-        issueNumber: issue.number,
-        body: `This issue was closed before all affected products were assessed. Please add assessments for the following and close again:\n\n${missing.map((id) => `- \`${id}\``).join('\n')}`
-      });
+      if (errors.length > 0) {
+        const { error, body } = errors[0];
+        await issuesGhRepo.reopenWithComment({
+          owner: ISSUES_OWNER,
+          repo: ISSUES_REPO_NAME,
+          issueNumber: issue.number,
+          body: `A VEX comment could not be processed due to a formatting error.\n\n**Error:** ${error}\n\n**Comment:**\n\`\`\`\n${body}\n\`\`\``
+        });
+      } else {
+        await issuesGhRepo.reopenWithComment({
+          owner: ISSUES_OWNER,
+          repo: ISSUES_REPO_NAME,
+          issueNumber: issue.number,
+          body: `This issue was closed before all affected products were assessed. Please add assessments for the following and close again:\n\n${missing.map((id) => `- \`${id}\``).join('\n')}`
+        });
+      }
       return;
     }
     if (!assessments.length) { return; }
@@ -101,7 +111,12 @@ const run = async () => {
     for (const { issue, cveId, assessment } of entries) {
       const key = `${issue.number}:${cveId}`;
       if (!issueCvePairs.has(key)) { issueCvePairs.set(key, { issue, cveId }); }
-      vexDoc.updateVulnerabilityStatus(cveId, assessment.productId, assessment.status, assessment.justification);
+      vexDoc.updateVulnerabilityStatus(cveId, assessment.productId, assessment.status, {
+        justification: assessment.justification,
+        label: assessment.label,
+        remediationCategory: assessment.remediationCategory,
+        remediationDetails: assessment.remediationDetails
+      });
     }
 
     vexDoc.incrementVersion();

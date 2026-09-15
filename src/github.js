@@ -8,8 +8,8 @@ export const parseIssueMetadata = (issue) => {
   const metaMatch = issue.body?.match(/<!-- VEX_META\n([\s\S]+?)\r?\n-->/);
   if (!metaMatch) { return null; }
   try {
-    const { paths, packages, referenceUrl } = JSON.parse(metaMatch[1]);
-    return { cveId: titleMatch[1], paths: paths ?? {}, packages: packages ?? [], referenceUrl: referenceUrl ?? null };
+    const { paths, packages, referenceUrl, pkgFileLocation } = JSON.parse(metaMatch[1]);
+    return { cveId: titleMatch[1], paths: paths ?? {}, packages: packages ?? [], referenceUrl: referenceUrl ?? null, pkgFileLocation: pkgFileLocation ?? null };
   } catch {
     return null;
   }
@@ -25,11 +25,69 @@ export const parseVexComment = (body) => {
     AFFECTED: 'known_affected',
     UNDER_INVESTIGATION: 'under_investigation'
   };
+  const labelMatch = body.match(/^LABEL:\s*(.+)$/im);
+  const remediationMatch = body.match(/^REMEDIATION:\s*(mitigation|no_fix_planned|none_available|vendor_fix|workaround)\s*[-–]\s*(.+)$/im);
   return {
     productIds: productMatch[1].split(',').map((s) => s.trim()).filter(Boolean),
     status: statusMap[statusMatch[1].toUpperCase()],
-    justification: statusMatch[2].trim()
+    justification: statusMatch[2].trim(),
+    label: labelMatch?.[1].trim() ?? null,
+    remediationCategory: remediationMatch?.[1].toLowerCase() ?? null,
+    remediationDetails: remediationMatch?.[2].trim() ?? null
   };
+};
+
+const VALID_LABELS = new Set([
+  'component_not_present',
+  'vulnerable_code_not_present',
+  'vulnerable_code_not_in_execute_path',
+  'vulnerable_code_cannot_be_controlled_by_adversary',
+  'inline_mitigations_already_exist'
+]);
+
+
+export const validateVexComment = (body) => {
+  if (!body) { return null; }
+  const looksLikeVex = (/^PRODUCT:/m).test(body) || (/^VEX:/im).test(body);
+  if (!looksLikeVex) { return null; }
+
+  const productIds = body.match(/^PRODUCT:\s*(.+)$/m)?.[1]
+    ?.split(',').map((s) => s.trim()).filter(Boolean);
+  if (!productIds?.length) { return null; }
+
+  const parsed = parseVexComment(body);
+  if (!parsed) {
+    const vexLine = body.match(/^VEX:\s*(.+)$/im)?.[1];
+    if (vexLine) {
+      const validStatusMatch = vexLine.match(/^(NOT_AFFECTED|FIXED|AFFECTED|UNDER_INVESTIGATION)/i);
+      if (validStatusMatch) {
+        return { productIds, error: `Missing justification after \`VEX: ${validStatusMatch[1].toUpperCase()}\`. Use \`VEX: ${validStatusMatch[1].toUpperCase()} - <justification>\`.` };
+      }
+      const badStatus = vexLine.split(/[\s-–]/)[0];
+      return { productIds, error: `Invalid VEX status \`${badStatus}\`. Valid assessment statuses are \`NOT_AFFECTED\`, \`FIXED\`, \`AFFECTED\`.` };
+    }
+    return { productIds, error: 'Could not parse VEX comment. Ensure it has a `PRODUCT:` line and a `VEX: <STATUS> - <justification>` line.' };
+  }
+
+  if (parsed.status === 'under_investigation') {
+    return { ...parsed, error: '`UNDER_INVESTIGATION` is the initial status and cannot be set via comment. Use `NOT_AFFECTED`, `FIXED`, or `AFFECTED`.' };
+  }
+
+  if (parsed.label !== null && !VALID_LABELS.has(parsed.label)) {
+    return { ...parsed, error: `Invalid LABEL \`${parsed.label}\`. Valid labels: ${[...VALID_LABELS].map((l) => `\`${l}\``).join(', ')}.` };
+  }
+
+  if ((/^REMEDIATION:/im).test(body) && !parsed.remediationCategory) {
+    const remLine = body.match(/^REMEDIATION:\s*(.+)$/im)?.[1];
+    const validCat = remLine?.match(/^(mitigation|no_fix_planned|none_available|vendor_fix|workaround)/i)?.[1];
+    if (validCat) {
+      return { ...parsed, error: `Missing details after \`REMEDIATION: ${validCat.toLowerCase()}\`. Use \`REMEDIATION: ${validCat.toLowerCase()} - <details>\`.` };
+    }
+    const badCategory = body.match(/^REMEDIATION:\s*(\S+)/im)?.[1];
+    return { ...parsed, error: `Invalid REMEDIATION category \`${badCategory}\`. Valid categories: \`mitigation\`, \`no_fix_planned\`, \`none_available\`, \`vendor_fix\`, \`workaround\`.` };
+  }
+
+  return parsed;
 };
 
 /**
@@ -45,10 +103,10 @@ export const formatCvssLine = (cvss) => {
 
 /**
  * Renders the full GitHub issue body for a VEX triage issue.
- * @param {{ cveId: string, paths: object, severity: string, referenceUrl: string|null, packages?: Array, cvss?: object|null }} opts
+ * @param {{ cveId: string, paths: object, severity: string, referenceUrl: string|null, packages?: Array, cvss?: object|null, pkgFileLocation?: string|null }} opts
  */
 export const buildVexIssueBody = ({
-  cveId, paths, severity, referenceUrl, packages = [], cvss = null
+  cveId, paths, severity, referenceUrl, packages = [], cvss = null, pkgFileLocation = null
 }) => {
   const url = referenceUrl ?? `https://nvd.nist.gov/vuln/detail/${cveId}`;
   const urlLabel = url.includes('nvd.nist.gov') ? 'View on NVD →' : 'View advisory →';
@@ -59,11 +117,12 @@ export const buildVexIssueBody = ({
   const packageSection = packages.length
     ? `\n## Affected packages\n\n| Package | Type | Affected version | Fixed in |\n|---|---|---|---|\n${packages.map(({ name, affected, fixed, type }) => `| \`${name}\` | ${type ?? '—'} | \`${affected}\` | ${fixed ? `\`${fixed}\`` : 'None'} |`).join('\n')}\n`
     : '';
+  const pkgFileLocationLine = pkgFileLocation ? `**Installed at:** \`${pkgFileLocation}\`\n\n` : '';
   return `## ${cveId} — ${severity}
 
 **[${urlLabel}](${url})**
 
-${formatCvssLine(cvss)}${packageSection}
+${pkgFileLocationLine}${formatCvssLine(cvss)}${packageSection}
 ## Affected images
 
 | Image | Product ID |
@@ -72,22 +131,56 @@ ${imageTable}
 
 ## How to assess
 
-Add one or more comments with assessments, then close the issue. Each comment should have exactly one VEX status and justification for one or more product IDs. The VEX document will be updated automatically.
+Add one or more comments with assessments, then close the issue. Each comment must have exactly one \`PRODUCT:\` and one \`VEX:\` line. The VEX document will be updated automatically.
 
+For \`NOT_AFFECTED\` — include a machine-readable \`LABEL:\`:
 \`\`\`
 PRODUCT: <product ID>, <product ID>, ...
 VEX: NOT_AFFECTED - <justification>
+LABEL: <label>
 \`\`\`
 
-Valid statuses: \`NOT_AFFECTED\`, \`FIXED\`, \`AFFECTED\`, \`UNDER_INVESTIGATION\`
+| Label | Meaning |
+|---|---|
+| \`component_not_present\` | The vulnerable component is not included in the product |
+| \`vulnerable_code_not_present\` | The vulnerable code is absent from this build |
+| \`vulnerable_code_not_in_execute_path\` | Vulnerable code exists but is never executed |
+| \`vulnerable_code_cannot_be_controlled_by_adversary\` | Attacker cannot reach the vulnerable code path |
+| \`inline_mitigations_already_exist\` | Built-in mitigations prevent exploitation |
+
+For \`FIXED\` — include a \`REMEDIATION:\` line:
+\`\`\`
+PRODUCT: <product ID>, <product ID>, ...
+VEX: FIXED - <justification>
+REMEDIATION: <category> - <details>
+\`\`\`
+
+| Category | Meaning |
+|---|---|
+| \`vendor_fix\` | An official fix has been released |
+| \`workaround\` | A workaround exists but no fix yet |
+| \`mitigation\` | A mitigation reduces the risk |
+| \`none_available\` | No fix or workaround is currently available |
+| \`no_fix_planned\` | The vendor does not intend to fix this |
+
+For \`AFFECTED\` — include a \`REMEDIATION:\` line with the recommended action:
+\`\`\`
+PRODUCT: <product ID>, <product ID>, ...
+VEX: AFFECTED - <impact description>
+REMEDIATION: <category> - <details>
+\`\`\`
+
+Use the same remediation categories as for \`FIXED\` above.
+
+All images in this issue are currently \`UNDER_INVESTIGATION\`. Valid assessment statuses: \`NOT_AFFECTED\`, \`FIXED\`, \`AFFECTED\`
 
 <!-- VEX_META
-${JSON.stringify({ paths, packages, referenceUrl: url })}
+${JSON.stringify({ paths, packages, referenceUrl: url, pkgFileLocation })}
 -->`;
 };
 
-export const createGithubVexRepo = (token) => {
-  const octokit = token
+export const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
+  const octokit = octokitOverride ?? (token
     ? new Octokit({ auth: token })
     : new Octokit({
       authStrategy: createAppAuth,
@@ -96,7 +189,7 @@ export const createGithubVexRepo = (token) => {
         privateKey: process.env.GH_PRIVATE_KEY,
         installationId: process.env.GH_INSTALLATION_ID
       }
-    });
+    }));
 
   const readVexFile = async ({ owner, repo, path }) => {
     try {
@@ -147,14 +240,14 @@ export const createGithubVexRepo = (token) => {
   };
 
   const openVexIssue = async ({
-    owner, repo, cveId, vexPath, productIds, severity, referenceUrl, packages, cvss
+    owner, repo, cveId, vexPath, productIds, severity, referenceUrl, packages, cvss, pkgFileLocation
   }) => {
     const { data } = await octokit.issues.create({
       owner,
       repo,
       title: packages?.length ? `[VEX] ${cveId} - ${packages[0].name}` : `[VEX] ${cveId}`,
       body: buildVexIssueBody({
-        cveId, paths: { [vexPath]: productIds }, severity, referenceUrl, packages, cvss
+        cveId, paths: { [vexPath]: productIds }, severity, referenceUrl, packages, cvss, pkgFileLocation
       }),
       labels: ['vex-pending']
     });
@@ -189,13 +282,15 @@ export const createGithubVexRepo = (token) => {
   };
 
   const updateVexIssue = async ({
-    owner, repo, issue, cveId, vexPath, oldVexPath, productIds, fixedProductIds = [], severity: overrideSeverity, referenceUrl, packages = [], cvss = null
+    owner, repo, issue, cveId, vexPath, oldVexPath, productIds, fixedProductIds = [], severity: overrideSeverity, referenceUrl, packages = [], cvss = null, pkgFileLocation = null, force = false
   }) => {
     const meta = parseIssueMetadata(issue);
     const paths = meta?.paths ? { ...meta.paths } : {};
     const existingPackages = meta?.packages ?? [];
     const existingReferenceUrl = meta?.referenceUrl ?? null;
+    const existingPkgFileLocation = meta?.pkgFileLocation ?? null;
     const resolvedReferenceUrl = referenceUrl ?? existingReferenceUrl ?? `https://nvd.nist.gov/vuln/detail/${cveId}`;
+    const resolvedPkgFileLocation = pkgFileLocation ?? existingPkgFileLocation;
 
     // Remove the previous version's path entry when rolling over to a new version.
     let removedOldPath = false;
@@ -221,9 +316,10 @@ export const createGithubVexRepo = (token) => {
     const sortPkgs = (pkgs) => [...pkgs].sort((a, b) => pkgKey(a).localeCompare(pkgKey(b)));
     const packagesChanged = JSON.stringify(sortPkgs(packages)) !== JSON.stringify(sortPkgs(existingPackages));
     const referenceUrlChanged = resolvedReferenceUrl !== existingReferenceUrl;
+    const pkgFileLocationChanged = resolvedPkgFileLocation !== existingPkgFileLocation;
 
-    const hasChanges = removedOldPath || productsChanged || packagesChanged || referenceUrlChanged || severity !== currentSeverity;
-    if (!hasChanges) { return; }
+    const hasChanges = removedOldPath || productsChanged || packagesChanged || referenceUrlChanged || pkgFileLocationChanged || severity !== currentSeverity;
+    if (!hasChanges && !force) { return; }
 
     if (fixedProductIds.length) {
       await octokit.issues.createComment({
@@ -244,26 +340,43 @@ export const createGithubVexRepo = (token) => {
       repo,
       issue_number: issue.number,
       body: buildVexIssueBody({
-        cveId, paths, severity, referenceUrl: resolvedReferenceUrl, packages, cvss
+        cveId, paths, severity, referenceUrl: resolvedReferenceUrl, packages, cvss, pkgFileLocation: resolvedPkgFileLocation
       })
     });
   };
 
-  const getAssessmentComments = async ({ owner, repo, issueNumber }, assessments = new Map(), page = 1) => {
+  const getAssessmentComments = async ({ owner, repo, issueNumber, allProductIds }, state = { assessments: new Map(), errors: [] }, page = 1) => {
     const { data: comments } = await octokit.issues.listComments({
-      owner, repo, issue_number: issueNumber, per_page: 100, page
+      owner, repo, issue_number: issueNumber, per_page: 100, page, direction: 'desc'
     });
     for (const comment of comments) {
-      const parsed = parseVexComment(comment.body);
-      if (!parsed) { continue; }
-      for (const productId of parsed.productIds) {
-        assessments.set(productId, { productId, status: parsed.status, justification: parsed.justification });
+      const prevErrorCount = state.errors.length;
+      const result = validateVexComment(comment.body);
+      if (!result?.productIds) { continue; }
+      for (const productId of result.productIds) {
+        if (!state.assessments.has(productId)) {
+          if (result.error) {
+            state.errors.push({ error: result.error, body: comment.body, url: comment.html_url });
+            break;
+          }
+          state.assessments.set(productId, {
+            productId,
+            status: result.status,
+            justification: result.justification,
+            label: result.label,
+            remediationCategory: result.remediationCategory,
+            remediationDetails: result.remediationDetails
+          });
+        }
+      }
+      if (state.errors.length > prevErrorCount) { continue; }
+      if (allProductIds && allProductIds.every((id) => state.assessments.has(id))) {
+        return { assessments: [...state.assessments.values()], errors: state.errors };
       }
     }
-    if (comments.length < 100) { return [...assessments.values()]; }
+    if (comments.length < 100) { return { assessments: [...state.assessments.values()], errors: state.errors }; }
     await sleep(1000);
-    // lord help us if we have more than 100 comments on a single issue, but let's handle it anyway.
-    return getAssessmentComments({ owner, repo, issueNumber }, assessments, page + 1);
+    return getAssessmentComments({ owner, repo, issueNumber, allProductIds }, state, page + 1);
   };
 
   const addLabels = async ({ owner, repo, issueNumber, labels }) => {
