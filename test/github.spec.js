@@ -1,5 +1,5 @@
 import 'should';
-import { parseVexComment, validateVexComment, parseIssueMetadata, formatCvssLine, buildVexIssueBody } from '../src/github.js';
+import { parseVexComment, validateVexComment, parseIssueMetadata, formatCvssLine, buildVexIssueBody, createGithubVexRepo } from '../src/github.js';
 
 describe('parseVexComment', () => {
   it('parses a valid single-product comment', () => {
@@ -102,9 +102,9 @@ describe('validateVexComment', () => {
     result.label.should.equal('component_not_present');
   });
 
-  it('returns an error when PRODUCT line is missing', () => {
+  it('returns null when PRODUCT line is missing', () => {
     const body = 'VEX: NOT_AFFECTED - not reachable';
-    validateVexComment(body).error.should.match(/Missing.*PRODUCT/);
+    (validateVexComment(body) === null).should.be.true();
   });
 
   it('returns an error with a helpful message when justification is missing', () => {
@@ -138,6 +138,107 @@ describe('validateVexComment', () => {
     const body = 'PRODUCT: prod:v1\nVEX: NOT_AFFECTED - not_affected_because_of_build_flags';
     const result = validateVexComment(body);
     result.should.not.have.property('error');
+  });
+
+  it('returns productIds alongside the error for an invalid comment', () => {
+    const body = 'PRODUCT: prod:v1, prod:v2\nVEX: NOT_AFFECTED';
+    const result = validateVexComment(body);
+    result.error.should.match(/Missing justification/);
+    result.productIds.should.deepEqual(['prod:v1', 'prod:v2']);
+  });
+});
+
+describe('getAssessmentComments', () => {
+  const makeRepo = (commentPages) => {
+    let page = 0;
+    return createGithubVexRepo(null, {
+      octokit: {
+        issues: {
+          listComments: async () => ({ data: commentPages[page++] ?? [] })
+        }
+      }
+    });
+  };
+
+  const comment = (body) => ({ body, html_url: 'https://example.com' });
+
+  it('returns assessments from valid comments', async () => {
+    const repo = makeRepo([[
+      comment('PRODUCT: prod:v1\nVEX: NOT_AFFECTED - not reachable')
+    ]]);
+    const { assessments, errors } = await repo.getAssessmentComments({ owner: 'o', repo: 'r', issueNumber: 1, allProductIds: ['prod:v1'] });
+    assessments.should.have.length(1);
+    assessments[0].productId.should.equal('prod:v1');
+    assessments[0].status.should.equal('known_not_affected');
+    errors.should.have.length(0);
+  });
+
+  it('newest comment wins when two valid comments assess the same product', async () => {
+    const repo = makeRepo([[
+      comment('PRODUCT: prod:v1\nVEX: FIXED - patched'),
+      comment('PRODUCT: prod:v1\nVEX: NOT_AFFECTED - old reason')
+    ]]);
+    const { assessments } = await repo.getAssessmentComments({ owner: 'o', repo: 'r', issueNumber: 1, allProductIds: ['prod:v1'] });
+    assessments[0].status.should.equal('fixed');
+  });
+
+  it('does not report an error for an invalid comment when a newer valid comment already assessed that product', async () => {
+    // newest-first: good p2, invalid p2, good p1
+    const repo = makeRepo([[
+      comment('PRODUCT: prod:p2\nVEX: FIXED - patched'),
+      comment('PRODUCT: prod:p2\nVEX: NOT_AFFECTED'),
+      comment('PRODUCT: prod:p1\nVEX: NOT_AFFECTED - not reachable')
+    ]]);
+    const { assessments, errors } = await repo.getAssessmentComments({ owner: 'o', repo: 'r', issueNumber: 1, allProductIds: ['prod:p1', 'prod:p2'] });
+    assessments.should.have.length(2);
+    errors.should.have.length(0);
+  });
+
+  it('reports an error for an invalid comment when the product has no valid assessment', async () => {
+    // newest-first: invalid p2, good p1 — p2 never validly assessed
+    const repo = makeRepo([[
+      comment('PRODUCT: prod:p2\nVEX: NOT_AFFECTED'),
+      comment('PRODUCT: prod:p1\nVEX: NOT_AFFECTED - not reachable')
+    ]]);
+    const { assessments, errors } = await repo.getAssessmentComments({ owner: 'o', repo: 'r', issueNumber: 1, allProductIds: ['prod:p1', 'prod:p2'] });
+    assessments.should.have.length(1);
+    assessments[0].productId.should.equal('prod:p1');
+    errors.should.have.length(1);
+    errors[0].error.should.match(/Missing justification/);
+  });
+
+  it('skips comments with no parseable PRODUCT line', async () => {
+    const repo = makeRepo([[
+      comment('just a regular comment'),
+      comment('VEX: NOT_AFFECTED - no product line'),
+      comment('PRODUCT: prod:v1\nVEX: FIXED - patched')
+    ]]);
+    const { assessments, errors } = await repo.getAssessmentComments({ owner: 'o', repo: 'r', issueNumber: 1, allProductIds: ['prod:v1'] });
+    assessments.should.have.length(1);
+    errors.should.have.length(0);
+  });
+
+  it('stops reading once all products are covered', async () => {
+    let commentCount = 0;
+    const repo = createGithubVexRepo(null, {
+      octokit: {
+        issues: {
+          listComments: async () => {
+            commentCount++;
+            return {
+              data: [
+                comment('PRODUCT: prod:p1\nVEX: NOT_AFFECTED - ok'),
+                comment('PRODUCT: prod:p2\nVEX: FIXED - patched'),
+                comment('PRODUCT: prod:p3\nVEX: AFFECTED - ongoing')
+              ]
+            };
+          }
+        }
+      }
+    });
+    const { assessments } = await repo.getAssessmentComments({ owner: 'o', repo: 'r', issueNumber: 1, allProductIds: ['prod:p1', 'prod:p2'] });
+    assessments.should.have.length(2);
+    commentCount.should.equal(1);
   });
 });
 

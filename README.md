@@ -43,7 +43,7 @@ Processes recently closed `vex-pending` issues in the calling repository, writes
 
 1. Fetches all issues closed within the look-back window that carry the `vex-pending` label.
 2. For each issue, parses the `VEX_META` block embedded in the issue body to extract the CVE ID, VEX file paths, and affected product IDs.
-3. Reads assessment comments, validates their format (status, label, remediation category), and builds a map of product → assessment. Later comments for the same product overwrite earlier ones.
+3. Reads assessment comments newest-to-oldest, validates their format (status, label, remediation category), and builds a map of product → assessment. The newest valid comment for each product wins.
 4. Reopens any issue that has a malformed comment (posting the error and the offending comment), or that was closed before all products were assessed (posting the missing IDs).
 5. Groups valid assessments by VEX file path, reads each CSAF file from the VEX repository, applies the assessments, increments the document version, and commits the result.
 6. Labels fully processed issues `vex-reflected` and removes `vex-pending`.
@@ -141,7 +141,7 @@ const repo = createGithubVexRepo(process.env.GITHUB_TOKEN);
 | `getOpenVexCveIssuesMap({ owner, repo })` | Returns a `Map<cveId, issue>` of all open `vex-pending` issues. |
 | `openVexIssue({ owner, repo, cveId, vexPath, productIds, severity, referenceUrl, packages, cvss, pkgFileLocation })` | Opens a new VEX triage issue with a formatted body and the `vex-pending` label. |
 | `updateVexIssue({ owner, repo, issue, cveId, vexPath, productIds, …, force })` | Updates the body of an existing VEX issue when the product list, severity, packages, reference URL, or `pkgFileLocation` changes. Pass `force: true` to rewrite the body even when nothing has changed. Closes the issue automatically if all products are removed. |
-| `getAssessmentComments({ owner, repo, issueNumber })` | Returns `{ assessments, errors }`. `assessments` is `[{ productId, status, justification, label, remediationCategory, remediationDetails }]` with later comments overwriting earlier ones for the same product. `errors` is `[{ error, body, url }]` for malformed comments. |
+| `getAssessmentComments({ owner, repo, issueNumber, allProductIds })` | Returns `{ assessments, errors }`. Reads comments newest-to-oldest; the first valid assessment for each product wins. Stops once all `allProductIds` are covered. `assessments` is `[{ productId, status, justification, label, remediationCategory, remediationDetails }]`. `errors` is `[{ error, body, url }]` for malformed comments whose product IDs were not covered by a newer valid comment. |
 | `markIssueAsReflected({ owner, repo, issue })` | Adds `vex-reflected` and removes `vex-pending` from an issue. |
 | `ensureLabel({ owner, repo, name, color })` | Creates a label if it does not already exist. |
 | `addLabels({ owner, repo, issueNumber, labels })` | Adds labels to an issue. |
@@ -151,8 +151,8 @@ const repo = createGithubVexRepo(process.env.GITHUB_TOKEN);
 ### `validateVexComment(body)`
 
 Validates a comment body as a VEX assessment. Returns:
-- `null` — comment has no `PRODUCT:` or `VEX:` lines; not a VEX comment
-- `{ error: string }` — looks like a VEX comment but has a formatting problem (invalid status, `UNDER_INVESTIGATION` used as an assessment, invalid `LABEL:` value, invalid `REMEDIATION:` category)
+- `null` — comment has no `PRODUCT:` or `VEX:` lines, or no parseable product IDs; not a VEX comment
+- `{ productIds, error: string }` — looks like a VEX comment but has a formatting problem (missing justification, invalid status, `UNDER_INVESTIGATION` used as an assessment, invalid `LABEL:` value, invalid `REMEDIATION:` category); `productIds` is always present so callers can correlate the error to specific products
 - parsed object — valid; same shape as `parseVexComment`
 
 ### `parseVexComment(body)`

@@ -20,14 +20,18 @@
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
-    "./src/github": "./src/github.js",
-    "./src/csaf": "./src/csaf.js"
+    "./csaf": "./src/csaf.js",
+    "./github": "./src/github.js"
   },
   "scripts": {
     "setup": "husky",
     "build:action": "ncc build issue-vex-assertions/index.js -o issue-vex-assertions/dist --license licenses.txt",
     "test": "mocha 'test/**/*.spec.js'",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "lint:changed": "lint-staged"
+  },
+  "lint-staged": {
+    "*.js": "eslint"
   },
   "dependencies": {
     "@octokit/auth-app": "^8.3.1",

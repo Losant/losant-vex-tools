@@ -25,7 +25,7 @@ export const parseVexComment = (body) => {
     AFFECTED: 'known_affected',
     UNDER_INVESTIGATION: 'under_investigation'
   };
-  const labelMatch = body.match(/^LABEL:\s*(.+)$/m);
+  const labelMatch = body.match(/^LABEL:\s*(.+)$/im);
   const remediationMatch = body.match(/^REMEDIATION:\s*(mitigation|no_fix_planned|none_available|vendor_fix|workaround)\s*[-–]\s*(.+)$/im);
   return {
     productIds: productMatch[1].split(',').map((s) => s.trim()).filter(Boolean),
@@ -51,34 +51,40 @@ export const validateVexComment = (body) => {
   const looksLikeVex = (/^PRODUCT:/m).test(body) || (/^VEX:/im).test(body);
   if (!looksLikeVex) { return null; }
 
+  const productIds = body.match(/^PRODUCT:\s*(.+)$/m)?.[1]
+    ?.split(',').map((s) => s.trim()).filter(Boolean);
+  if (!productIds?.length) { return null; }
+
   const parsed = parseVexComment(body);
   if (!parsed) {
-    if (!(/^PRODUCT:/m).test(body)) {
-      return { error: 'Missing `PRODUCT:` line.' };
-    }
     const vexLine = body.match(/^VEX:\s*(.+)$/im)?.[1];
     if (vexLine) {
       const validStatusMatch = vexLine.match(/^(NOT_AFFECTED|FIXED|AFFECTED|UNDER_INVESTIGATION)/i);
       if (validStatusMatch) {
-        return { error: `Missing justification after \`VEX: ${validStatusMatch[1].toUpperCase()}\`. Use \`VEX: ${validStatusMatch[1].toUpperCase()} - <justification>\`.` };
+        return { productIds, error: `Missing justification after \`VEX: ${validStatusMatch[1].toUpperCase()}\`. Use \`VEX: ${validStatusMatch[1].toUpperCase()} - <justification>\`.` };
       }
       const badStatus = vexLine.split(/[\s-–]/)[0];
-      return { error: `Invalid VEX status \`${badStatus}\`. Valid assessment statuses are \`NOT_AFFECTED\`, \`FIXED\`, \`AFFECTED\`.` };
+      return { productIds, error: `Invalid VEX status \`${badStatus}\`. Valid assessment statuses are \`NOT_AFFECTED\`, \`FIXED\`, \`AFFECTED\`.` };
     }
-    return { error: 'Could not parse VEX comment. Ensure it has a `PRODUCT:` line and a `VEX: <STATUS> - <justification>` line.' };
+    return { productIds, error: 'Could not parse VEX comment. Ensure it has a `PRODUCT:` line and a `VEX: <STATUS> - <justification>` line.' };
   }
 
   if (parsed.status === 'under_investigation') {
-    return { error: '`UNDER_INVESTIGATION` is the initial status and cannot be set via comment. Use `NOT_AFFECTED`, `FIXED`, or `AFFECTED`.' };
+    return { ...parsed, error: '`UNDER_INVESTIGATION` is the initial status and cannot be set via comment. Use `NOT_AFFECTED`, `FIXED`, or `AFFECTED`.' };
   }
 
   if (parsed.label !== null && !VALID_LABELS.has(parsed.label)) {
-    return { error: `Invalid LABEL \`${parsed.label}\`. Valid labels: ${[...VALID_LABELS].map((l) => `\`${l}\``).join(', ')}.` };
+    return { ...parsed, error: `Invalid LABEL \`${parsed.label}\`. Valid labels: ${[...VALID_LABELS].map((l) => `\`${l}\``).join(', ')}.` };
   }
 
   if ((/^REMEDIATION:/im).test(body) && !parsed.remediationCategory) {
+    const remLine = body.match(/^REMEDIATION:\s*(.+)$/im)?.[1];
+    const validCat = remLine?.match(/^(mitigation|no_fix_planned|none_available|vendor_fix|workaround)/i)?.[1];
+    if (validCat) {
+      return { ...parsed, error: `Missing details after \`REMEDIATION: ${validCat.toLowerCase()}\`. Use \`REMEDIATION: ${validCat.toLowerCase()} - <details>\`.` };
+    }
     const badCategory = body.match(/^REMEDIATION:\s*(\S+)/im)?.[1];
-    return { error: `Invalid REMEDIATION category \`${badCategory}\`. Valid categories: \`mitigation\`, \`no_fix_planned\`, \`none_available\`, \`vendor_fix\`, \`workaround\`.` };
+    return { ...parsed, error: `Invalid REMEDIATION category \`${badCategory}\`. Valid categories: \`mitigation\`, \`no_fix_planned\`, \`none_available\`, \`vendor_fix\`, \`workaround\`.` };
   }
 
   return parsed;
@@ -173,8 +179,8 @@ ${JSON.stringify({ paths, packages, referenceUrl: url, pkgFileLocation })}
 -->`;
 };
 
-export const createGithubVexRepo = (token) => {
-  const octokit = token
+export const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
+  const octokit = octokitOverride ?? (token
     ? new Octokit({ auth: token })
     : new Octokit({
       authStrategy: createAppAuth,
@@ -183,7 +189,7 @@ export const createGithubVexRepo = (token) => {
         privateKey: process.env.GH_PRIVATE_KEY,
         installationId: process.env.GH_INSTALLATION_ID
       }
-    });
+    }));
 
   const readVexFile = async ({ owner, repo, path }) => {
     try {
@@ -339,32 +345,38 @@ export const createGithubVexRepo = (token) => {
     });
   };
 
-  const getAssessmentComments = async ({ owner, repo, issueNumber }, state = { assessments: new Map(), errors: [] }, page = 1) => {
+  const getAssessmentComments = async ({ owner, repo, issueNumber, allProductIds }, state = { assessments: new Map(), errors: [] }, page = 1) => {
     const { data: comments } = await octokit.issues.listComments({
-      owner, repo, issue_number: issueNumber, per_page: 100, page
+      owner, repo, issue_number: issueNumber, per_page: 100, page, direction: 'desc'
     });
     for (const comment of comments) {
+      const prevErrorCount = state.errors.length;
       const result = validateVexComment(comment.body);
-      if (!result) { continue; }
-      if (result.error) {
-        state.errors.push({ error: result.error, body: comment.body, url: comment.html_url });
-        continue;
-      }
+      if (!result?.productIds) { continue; }
       for (const productId of result.productIds) {
-        state.assessments.set(productId, {
-          productId,
-          status: result.status,
-          justification: result.justification,
-          label: result.label,
-          remediationCategory: result.remediationCategory,
-          remediationDetails: result.remediationDetails
-        });
+        if (!state.assessments.has(productId)) {
+          if (result.error) {
+            state.errors.push({ error: result.error, body: comment.body, url: comment.html_url });
+            break;
+          }
+          state.assessments.set(productId, {
+            productId,
+            status: result.status,
+            justification: result.justification,
+            label: result.label,
+            remediationCategory: result.remediationCategory,
+            remediationDetails: result.remediationDetails
+          });
+        }
+      }
+      if (state.errors.length > prevErrorCount) { continue; }
+      if (allProductIds && allProductIds.every((id) => state.assessments.has(id))) {
+        return { assessments: [...state.assessments.values()], errors: state.errors };
       }
     }
     if (comments.length < 100) { return { assessments: [...state.assessments.values()], errors: state.errors }; }
     await sleep(1000);
-    // lord help us if we have more than 100 comments on a single issue, but let's handle it anyway.
-    return getAssessmentComments({ owner, repo, issueNumber }, state, page + 1);
+    return getAssessmentComments({ owner, repo, issueNumber, allProductIds }, state, page + 1);
   };
 
   const addLabels = async ({ owner, repo, issueNumber, labels }) => {
