@@ -394,6 +394,14 @@ export const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) =>
     await octokit.issues.update({ owner, repo, issue_number: issueNumber, state: 'open' });
   };
 
+  const getRepoDetails = async (repoOwner, repoName) => {
+    const [{ data: tags }, { data: repoData }] = await Promise.all([
+      octokit.rest.repos.listTags({ owner: repoOwner, repo: repoName, per_page: 2 }),
+      octokit.rest.repos.get({ owner: repoOwner, repo: repoName })
+    ]);
+    return { tags, repoData }
+  };
+
   return {
     readVexFile,
     writeVexFile,
@@ -407,6 +415,7 @@ export const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) =>
     addLabels,
     removeLabel,
     reopenWithComment,
-    markIssueAsReflected
+    markIssueAsReflected,
+    getRepoDetails
   };
 };

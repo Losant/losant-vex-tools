@@ -18,9 +18,11 @@ inputs:
     required: false
     description: 'Minimum severity to open issues: CRITICAL, HIGH, MEDIUM, or LOW'
     default: 'HIGH'
-  github_token:
-    required: true
-    description: 'GitHub token with write access to vex_repo and issues_repo'
+
+# Required environment variables (set in your workflow's env or step env):
+#   GITHUB_TOKEN      - token with read access to the current repo and issues:write on issues_repo
+#   VEX_GITHUB_TOKEN  - token with contents:write on vex_repo; falls back to GITHUB_TOKEN
+
 runs:
   using: docker
   image: Dockerfile

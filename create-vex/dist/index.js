@@ -31147,7 +31147,7 @@ const DEFAULT_PUBLISHER = {
 const createVexDocument = (docOrOptions, { publisher } = {}) => {
   let meta;
   const products = new Map(); // Map<product_id, branch entry>
-  const vulnerabilities = new Map(); // Map<cveId, { product_status, threats: Map<details, Set>, flags: Map<label, Set>, remediations: Map<"cat\tdetails", {category, details, ids: Set}>, notes[] }>
+  const vulnerabilities = new Map(); // Map<cveId, { product_status: Map<status, Set>, threats: Map<"cat\tdetails", {category, details, ids: Set}>, flags: Map<label, Set>, remediations: Map<"cat\tdetails", {category, details, ids: Set}>, notes[] }>
 
   if (docOrOptions?.document) {
     // Hydrate from existing CSAF document
@@ -31162,9 +31162,10 @@ const createVexDocument = (docOrOptions, { publisher } = {}) => {
           Object.entries(vuln.product_status ?? {}).map(([s, ids]) => [s, new Set(ids)])
         ),
         threats: new Map(
-          (vuln.threats ?? [])
-            .filter((t) => t.category === 'impact')
-            .map((t) => [t.details, new Set(t.product_ids)])
+          (vuln.threats ?? []).map((t) => {
+            const category = t.category ?? 'impact';
+            return [`${category}\t${t.details}`, { category, details: t.details, ids: new Set(t.product_ids) }];
+          })
         ),
         flags: new Map(
           (vuln.flags ?? []).map((f) => [f.label, new Set(f.product_ids)])
@@ -31203,9 +31204,9 @@ const createVexDocument = (docOrOptions, { publisher } = {}) => {
       for (const [status, ids] of product_status) {
         if (ids.size > 0) { ps[status] = [...ids]; }
       }
-      const threatArr = [...threats.entries()]
-        .filter(([, ids]) => ids.size > 0)
-        .map(([details, ids]) => ({ category: 'impact', details, product_ids: [...ids] }));
+      const threatArr = [...threats.values()]
+        .filter(({ ids }) => ids.size > 0)
+        .map(({ category, details, ids }) => ({ category, details, product_ids: [...ids] }));
       const flagArr = [...flags.entries()]
         .filter(([, ids]) => ids.size > 0)
         .map(([label, ids]) => ({ label, product_ids: [...ids] }));
@@ -31252,9 +31253,11 @@ const createVexDocument = (docOrOptions, { publisher } = {}) => {
       if (note) { note.text = justification; }
     }
 
-    clearFrom(vuln.threats);
+    for (const entry of vuln.threats.values()) { entry.ids.delete(productId); }
     if (justification && (status === 'known_not_affected' || status === 'known_affected')) {
-      addTo(vuln.threats, justification);
+      const threatKey = `impact\t${justification}`;
+      if (!vuln.threats.has(threatKey)) { vuln.threats.set(threatKey, { category: 'impact', details: justification, ids: new Set() }); }
+      vuln.threats.get(threatKey).ids.add(productId);
     }
 
     clearFrom(vuln.flags);
@@ -31670,26 +31673,50 @@ function withDefaults(oldDefaults, newDefaults) {
 var endpoint = withDefaults(null, DEFAULTS);
 
 
-;// CONCATENATED MODULE: ./node_modules/.pnpm/content-type@3.0.0/node_modules/content-type/dist/index.js
+;// CONCATENATED MODULE: ./node_modules/.pnpm/content-type@3.1.0/node_modules/content-type/dist/index.js
 /*!
  * content-type
  * Copyright(c) 2015 Douglas Christopher Wilson
  * MIT Licensed
  */
-const TEXT_REGEXP = /^[\u0009\u0020-\u007e\u0080-\u00ff]*$/;
-const TOKEN_REGEXP = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const SP = 32; // " "
+const HTAB = 9; // "\t"
+const SEMI = 59; // ";"
+const EQ = 61; // "="
+const DQUOTE = 34; // '"'
+const BSLASH = 92; // "\\"
+const COMMA = 44; // ","
+const LOWER_CASE = 1;
+const OWS = 2;
+const SEMI_FLAG = 4;
+const COMMA_FLAG = 8;
+const TOKEN_FLAG = 16;
+const NON_ASCII = 0xff00;
+const CASE_FLAGS = LOWER_CASE | NON_ASCII;
 /**
- * RegExp to match chars that must be quoted-pair in RFC 9110 sec 5.6.4
+ * Character flags used to normalize HTTP field values while scanning.
+ * Out-of-range reads intentionally coerce to zero in bitwise expressions.
  */
-const QUOTE_REGEXP = /[\\"]/g;
-/**
- * RegExp to match type in RFC 9110 sec 8.3.1
- *
- * media-type = type "/" subtype
- * type       = token
- * subtype    = token
- */
-const TYPE_REGEXP = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const CHAR_MAP = new Uint8Array(0x100);
+CHAR_MAP[HTAB] |= OWS;
+CHAR_MAP[SP] |= OWS;
+CHAR_MAP[SEMI] |= SEMI_FLAG;
+CHAR_MAP[COMMA] |= COMMA_FLAG;
+for (let code = 0x80 /* non-ASCII */; code <= 0xff; code++) {
+    CHAR_MAP[code] |= LOWER_CASE;
+}
+for (const char of "!#$%&'*+-.^_`|~") {
+    CHAR_MAP[char.charCodeAt(0)] |= TOKEN_FLAG;
+}
+for (let code = 0x30 /* 0 */; code <= 0x39 /* 9 */; code++) {
+    CHAR_MAP[code] |= TOKEN_FLAG;
+}
+for (let code = 0x41 /* A */; code <= 0x5a /* Z */; code++) {
+    CHAR_MAP[code] |= LOWER_CASE | TOKEN_FLAG;
+}
+for (let code = 0x61 /* a */; code <= 0x7a /* z */; code++) {
+    CHAR_MAP[code] |= TOKEN_FLAG;
+}
 /**
  * Null object perf optimization. Faster than `Object.create(null)` and `{ __proto__: null }`.
  */
@@ -31699,20 +31726,85 @@ const NullObject = /* @__PURE__ */ (() => {
     return C;
 })();
 /**
+ * Validate a type string against RFC 9110.
+ */
+function isTypeValid(type) {
+    const len = type.length;
+    let hasSlash = false;
+    for (let index = 0; index < len; index++) {
+        const code = type.charCodeAt(index);
+        if (code === 47 /* / */) {
+            if (hasSlash || index === 0 || index === len - 1)
+                return false;
+            hasSlash = true;
+        }
+        else if (!isTokenCode(code)) {
+            return false;
+        }
+    }
+    return hasSlash;
+}
+/**
+ * Validate a token against RFC 9110.
+ */
+function isTokenValid(name) {
+    const len = name.length;
+    if (len === 0)
+        return false;
+    for (let index = 0; index < len; index++) {
+        if (!isTokenCode(name.charCodeAt(index)))
+            return false;
+    }
+    return true;
+}
+/**
+ * Check whether a character code belongs to the token production in RFC 9110.
+ */
+function isTokenCode(code) {
+    return (CHAR_MAP[code] & TOKEN_FLAG) !== 0;
+}
+/**
+ * Serialize a parameter value.
+ */
+function parameterValue(str) {
+    const len = str.length;
+    if (len === 0)
+        return '""';
+    let index = 0;
+    while (index < len && isTokenCode(str.charCodeAt(index)))
+        index++;
+    if (index === len)
+        return str;
+    let result = '"';
+    let start = 0;
+    while (index < len) {
+        const code = str.charCodeAt(index);
+        if (code !== HTAB && (code < SP || code === 127 || code > 255)) {
+            throw new TypeError(`Invalid parameter value: ${str}`);
+        }
+        if (code === 34 /* " */ || code === 92 /* \\ */) {
+            result += `${str.slice(start, index)}\\`;
+            start = index;
+        }
+        index++;
+    }
+    return `${result}${str.slice(start)}"`;
+}
+/**
  * Format an object into a `Content-Type` header.
  */
 function format(obj) {
     const { type, parameters } = obj;
-    if (!type || !TYPE_REGEXP.test(type)) {
+    if (!type || !isTypeValid(type)) {
         throw new TypeError(`Invalid type: ${type}`);
     }
     let result = type;
     if (parameters) {
         for (const param of Object.keys(parameters)) {
-            if (!TOKEN_REGEXP.test(param)) {
+            if (!isTokenValid(param)) {
                 throw new TypeError(`Invalid parameter name: ${param}`);
             }
-            result += `; ${param}=${qstring(parameters[param])}`;
+            result += `; ${param}=${parameterValue(parameters[param])}`;
         }
     }
     return result;
@@ -31721,126 +31813,158 @@ function format(obj) {
  * Parse a `Content-Type` header.
  */
 function dist_parse(header, options) {
-    const stopChar = options?.comma === true ? COMMA : 65_536; // Sentinel for "no stop char".
+    const stopFlags = SEMI_FLAG | (options?.comma === true ? COMMA_FLAG : 0);
     const len = header.length;
-    let index = skipOWS(header, options?.start ?? 0, len);
-    const valueStart = index;
-    index = skipValue(header, index, len, stopChar);
-    const valueEnd = trailingOWS(header, valueStart, index);
-    const type = header.slice(valueStart, valueEnd).toLowerCase();
-    if (options?.parameters === false) {
+    let valueStart = options?.start ?? 0;
+    while ((CHAR_MAP[header.charCodeAt(valueStart)] & OWS) !== 0) {
+        valueStart++;
+    }
+    let index = valueStart;
+    let typeFlags = 0;
+    let whitespace = -1;
+    let stop = options?.parameters === false ? COMMA_FLAG : 0;
+    while (index < len) {
+        const code = header.charCodeAt(index);
+        const flags = CHAR_MAP[code];
+        if ((flags & stopFlags) !== 0) {
+            stop |= flags & COMMA_FLAG;
+            break;
+        }
+        if ((flags & OWS) !== 0) {
+            if (whitespace === -1)
+                whitespace = index;
+        }
+        else {
+            whitespace = -1;
+        }
+        typeFlags |= (code & NON_ASCII) | flags;
+        index++;
+    }
+    const valueEnd = whitespace === -1 ? index : whitespace;
+    const value = header.slice(valueStart, valueEnd);
+    const type = (typeFlags & CASE_FLAGS) === 0 ? value : value.toLowerCase();
+    if (index === len || stop !== 0) {
         return { type, index, parameters: new NullObject() };
     }
-    return parseParameters(header, type, index, len, stopChar);
+    return parseParameters(header, type, index, len, stopFlags);
 }
-const SP = 32; // " "
-const HTAB = 9; // "\t"
-const SEMI = 59; // ";"
-const EQ = 61; // "="
-const DQUOTE = 34; // '"'
-const BSLASH = 92; // "\\"
-const COMMA = 44; // ","
 /**
  * Parses the parameters of a `Content-Type` header starting at the given index.
  */
-function parseParameters(header, type, index, len, stopChar) {
+function parseParameters(header, type, index, len, stopFlags) {
     const parameters = new NullObject();
     parameter: while (index < len) {
-        if (header.charCodeAt(index) === stopChar)
-            break;
-        index = skipOWS(header, index + 1 /* Skip over ; */, len);
+        index++; // Skip over ;
+        while ((CHAR_MAP[header.charCodeAt(index)] & OWS) !== 0) {
+            index++;
+        }
         const keyStart = index;
+        let keyFlags = 0;
+        let keyWhitespace = -1;
         while (index < len) {
             const code = header.charCodeAt(index);
-            if (code === stopChar)
-                break parameter;
-            if (code === SEMI)
+            const flags = CHAR_MAP[code];
+            if ((flags & stopFlags) !== 0) {
+                if ((flags & COMMA_FLAG) !== 0)
+                    break parameter;
                 continue parameter;
+            }
             if (code === EQ) {
-                const keyEnd = trailingOWS(header, keyStart, index);
-                const key = header.slice(keyStart, keyEnd).toLowerCase();
-                index = skipOWS(header, index + 1, len);
-                if (index < len && header.charCodeAt(index) === DQUOTE) {
+                const keyEnd = keyWhitespace === -1 ? index : keyWhitespace;
+                const value = header.slice(keyStart, keyEnd);
+                const key = (keyFlags & CASE_FLAGS) === 0 ? value : value.toLowerCase();
+                index++;
+                while ((CHAR_MAP[header.charCodeAt(index)] & OWS) !== 0) {
                     index++;
-                    let value = "";
+                }
+                if (index < len && header.charCodeAt(index) === DQUOTE) {
+                    const quotedStart = ++index;
+                    let escaped = false;
                     while (index < len) {
-                        const code = header.charCodeAt(index++);
+                        const code = header.charCodeAt(index);
                         if (code === DQUOTE) {
-                            index = skipValue(header, index, len, stopChar);
-                            if (parameters[key] === undefined)
-                                parameters[key] = value;
-                            break;
+                            if (parameters[key] === undefined) {
+                                parameters[key] = escaped
+                                    ? unescapeQuotedPairs(header, quotedStart, index)
+                                    : header.slice(quotedStart, index);
+                            }
+                            index++;
+                            let stop = 0;
+                            // Discard characters between quote and delimiter.
+                            while (index < len) {
+                                const code = header.charCodeAt(index);
+                                const flags = CHAR_MAP[code];
+                                if ((flags & stopFlags) !== 0) {
+                                    stop = flags & COMMA_FLAG;
+                                    break;
+                                }
+                                index++;
+                            }
+                            if (stop !== 0)
+                                break parameter;
+                            continue parameter;
                         }
-                        if (code === BSLASH && index < len) {
-                            value += header[index++];
+                        if (code === BSLASH && index + 1 < len) {
+                            escaped = true;
+                            index += 2;
                             continue;
                         }
-                        value += String.fromCharCode(code);
+                        index++;
                     }
                     continue parameter;
                 }
                 const valueStart = index;
-                index = skipValue(header, index, len, stopChar);
+                let stop = 0;
+                let valueWhitespace = -1;
+                while (index < len) {
+                    const code = header.charCodeAt(index);
+                    const flags = CHAR_MAP[code];
+                    if ((flags & stopFlags) !== 0) {
+                        stop = flags & COMMA_FLAG;
+                        break;
+                    }
+                    if ((flags & OWS) !== 0) {
+                        if (valueWhitespace === -1)
+                            valueWhitespace = index;
+                    }
+                    else {
+                        valueWhitespace = -1;
+                    }
+                    index++;
+                }
                 if (parameters[key] === undefined) {
-                    const valueEnd = trailingOWS(header, valueStart, index);
+                    const valueEnd = valueWhitespace === -1 ? index : valueWhitespace;
                     parameters[key] = header.slice(valueStart, valueEnd);
                 }
+                if (stop !== 0)
+                    break parameter;
                 continue parameter;
             }
+            if ((flags & OWS) !== 0) {
+                if (keyWhitespace === -1)
+                    keyWhitespace = index;
+            }
+            else {
+                keyWhitespace = -1;
+            }
+            keyFlags |= (code & NON_ASCII) | flags;
             index++;
         }
     }
     return { type, index, parameters };
 }
 /**
- * Skip over characters until a semicolon or other exit character.
+ * Remove backslashes from quoted pairs in a known-terminated quoted string body.
  */
-function skipValue(str, index, len, stopChar) {
-    while (index < len) {
-        const code = str.charCodeAt(index);
-        if (code === SEMI || code === stopChar)
-            break;
-        index++;
+function unescapeQuotedPairs(str, start, end) {
+    let result = "";
+    for (let index = start; index < end; index++) {
+        if (str.charCodeAt(index) === BSLASH) {
+            result += str.slice(start, index);
+            start = ++index;
+        }
     }
-    return index;
-}
-/**
- * Skip optional whitespace (OWS) in an HTTP header value.
- *
- * OWS is defined in RFC 9110 sec 5.6.3 as SP (" ") or HTAB ("\t").
- */
-function skipOWS(header, index, len) {
-    while (index < len) {
-        const char = header.charCodeAt(index);
-        if (char !== SP && char !== HTAB)
-            break;
-        index++;
-    }
-    return index;
-}
-/**
- * Trim optional whitespace (OWS) from the end of a substring.
- *
- * OWS is defined in RFC 9110 sec 5.6.3 as SP (" ") or HTAB ("\t").
- */
-function trailingOWS(header, start, end) {
-    while (end > start) {
-        const char = header.charCodeAt(end - 1);
-        if (char !== SP && char !== HTAB)
-            break;
-        end--;
-    }
-    return end;
-}
-/**
- * Serialize a parameter value.
- */
-function qstring(str) {
-    if (TOKEN_REGEXP.test(str))
-        return str;
-    if (TEXT_REGEXP.test(str))
-        return `"${str.replace(QUOTE_REGEXP, "\\$&")}"`;
-    throw new TypeError(`Invalid parameter value: ${str}`);
+    return result + str.slice(start, end);
 }
 //# sourceMappingURL=index.js.map
 ;// CONCATENATED MODULE: ./node_modules/.pnpm/json-with-bigint@3.5.12/node_modules/json-with-bigint/json-with-bigint.js
@@ -35006,8 +35130,10 @@ const parseIssueMetadata = (issue) => {
   const metaMatch = issue.body?.match(/<!-- VEX_META\n([\s\S]+?)\r?\n-->/);
   if (!metaMatch) { return null; }
   try {
-    const { paths, packages, referenceUrl, pkgFileLocation } = JSON.parse(metaMatch[1]);
-    return { cveId: titleMatch[1], paths: paths ?? {}, packages: packages ?? [], referenceUrl: referenceUrl ?? null, pkgFileLocation: pkgFileLocation ?? null };
+    const { paths, packages, referenceUrl, pkgFileLocation, cvss } = JSON.parse(metaMatch[1]);
+    return {
+      cveId: titleMatch[1], paths: paths ?? {}, packages: packages ?? [], referenceUrl: referenceUrl ?? null, pkgFileLocation: pkgFileLocation ?? null, cvss: cvss ?? null
+    };
   } catch {
     return null;
   }
@@ -35173,7 +35299,7 @@ Use the same remediation categories as for \`FIXED\` above.
 All images in this issue are currently \`UNDER_INVESTIGATION\`. Valid assessment statuses: \`NOT_AFFECTED\`, \`FIXED\`, \`AFFECTED\`
 
 <!-- VEX_META
-${JSON.stringify({ paths, packages, referenceUrl: url, pkgFileLocation })}
+${JSON.stringify({ paths, packages, referenceUrl: url, pkgFileLocation, cvss })}
 -->`;
 };
 
@@ -35203,7 +35329,7 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
   const writeVexFile = async ({
     owner, repo, path, doc, sha, message
   }) => {
-    const content = Buffer.from(JSON.stringify(doc, null, 2)).toString('base64');
+    const content = Buffer.from(`${JSON.stringify(doc, null, 2)}\n`).toString('base64');
     await octokit.repos.createOrUpdateFileContents({
       owner,
       repo,
@@ -35287,8 +35413,11 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
     const existingPackages = meta?.packages ?? [];
     const existingReferenceUrl = meta?.referenceUrl ?? null;
     const existingPkgFileLocation = meta?.pkgFileLocation ?? null;
+    const existingCvss = meta?.cvss ?? null;
     const resolvedReferenceUrl = referenceUrl ?? existingReferenceUrl ?? `https://nvd.nist.gov/vuln/detail/${cveId}`;
     const resolvedPkgFileLocation = pkgFileLocation ?? existingPkgFileLocation;
+    const resolvedCvss = cvss ?? existingCvss;
+    const resolvedPackages = packages.length > 0 ? packages : existingPackages;
 
     // Remove the previous version's path entry when rolling over to a new version.
     let removedOldPath = false;
@@ -35312,11 +35441,12 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
 
     const pkgKey = (p) => `${p.name}@${p.affected}@${p.fixed ?? ''}`;
     const sortPkgs = (pkgs) => [...pkgs].sort((a, b) => pkgKey(a).localeCompare(pkgKey(b)));
-    const packagesChanged = JSON.stringify(sortPkgs(packages)) !== JSON.stringify(sortPkgs(existingPackages));
+    const packagesChanged = JSON.stringify(sortPkgs(resolvedPackages)) !== JSON.stringify(sortPkgs(existingPackages));
     const referenceUrlChanged = resolvedReferenceUrl !== existingReferenceUrl;
     const pkgFileLocationChanged = resolvedPkgFileLocation !== existingPkgFileLocation;
+    const cvssChanged = JSON.stringify(resolvedCvss) !== JSON.stringify(existingCvss);
 
-    const hasChanges = removedOldPath || productsChanged || packagesChanged || referenceUrlChanged || pkgFileLocationChanged || severity !== currentSeverity;
+    const hasChanges = removedOldPath || productsChanged || packagesChanged || referenceUrlChanged || pkgFileLocationChanged || cvssChanged || severity !== currentSeverity;
     if (!hasChanges && !force) { return; }
 
     if (fixedProductIds.length) {
@@ -35338,7 +35468,7 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
       repo,
       issue_number: issue.number,
       body: buildVexIssueBody({
-        cveId, paths, severity, referenceUrl: resolvedReferenceUrl, packages, cvss, pkgFileLocation: resolvedPkgFileLocation
+        cveId, paths, severity, referenceUrl: resolvedReferenceUrl, packages: resolvedPackages, cvss: resolvedCvss, pkgFileLocation: resolvedPkgFileLocation
       })
     });
   };
@@ -35386,6 +35516,14 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
     await octokit.issues.update({ owner, repo, issue_number: issueNumber, state: 'open' });
   };
 
+  const getRepoDetails = async (repoOwner, repoName) => {
+    const [{ data: tags }, { data: repoData }] = await Promise.all([
+      octokit.rest.repos.listTags({ owner: repoOwner, repo: repoName, per_page: 2 }),
+      octokit.rest.repos.get({ owner: repoOwner, repo: repoName })
+    ]);
+    return { tags, repoData }
+  };
+
   return {
     readVexFile,
     writeVexFile,
@@ -35399,7 +35537,8 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
     addLabels,
     removeLabel,
     reopenWithComment,
-    markIssueAsReflected
+    markIssueAsReflected,
+    getRepoDetails
   };
 };
 
@@ -35427,21 +35566,21 @@ const meetsMinSeverity = (severity, minSeverity) => {
   return sevIdx !== -1 && minIdx !== -1 && sevIdx <= minIdx;
 };
 
+const AV_MAP = { N: 'NETWORK', A: 'ADJACENT', L: 'LOCAL', P: 'PHYSICAL' };
+const AC_MAP = { L: 'LOW', H: 'HIGH' };
+const PR_MAP = { N: 'NONE', L: 'LOW', H: 'HIGH' };
+const UI_MAP = { N: 'NONE', R: 'REQUIRED' };
 const parseCvssVector = (cvssObj) => {
   const v3 = cvssObj?.nvd?.V3Vector ?? cvssObj?.redhat?.V3Vector ?? null;
   const score = cvssObj?.nvd?.V3Score ?? cvssObj?.redhat?.V3Score ?? null;
   if (!v3 || score == null) { return null; }
   const parts = Object.fromEntries(v3.split('/').slice(1).map((p) => p.split(':')));
-  const avMap = { N: 'NETWORK', A: 'ADJACENT', L: 'LOCAL', P: 'PHYSICAL' };
-  const acMap = { L: 'LOW', H: 'HIGH' };
-  const prMap = { N: 'NONE', L: 'LOW', H: 'HIGH' };
-  const uiMap = { N: 'NONE', R: 'REQUIRED' };
   return {
     score,
-    attackVector: avMap[parts.AV] ?? parts.AV,
-    attackComplexity: acMap[parts.AC] ?? parts.AC,
-    privilegesRequired: prMap[parts.PR] ?? parts.PR,
-    userInteraction: uiMap[parts.UI] ?? parts.UI
+    attackVector: AV_MAP[parts.AV] ?? parts.AV,
+    attackComplexity: AC_MAP[parts.AC] ?? parts.AC,
+    privilegesRequired: PR_MAP[parts.PR] ?? parts.PR,
+    userInteraction: UI_MAP[parts.UI] ?? parts.UI
   };
 };
 
@@ -35474,7 +35613,6 @@ const trivyScan = (args, env) => {
 };
 
 const run = async () => {
-  const githubToken = getInput('github_token');
   const vexRepoInput = getInput('vex_repo');
   const issuesRepoInput = getInput('issues_repo') || process.env.GITHUB_REPOSITORY;
   const vexRepoDir = getInput('vex_repo_dir') || '';
@@ -35493,14 +35631,12 @@ const run = async () => {
 
   console.log(`Package: ${packageName}, repo: ${repoOwner}/${repoName}`);
 
-  const ghRepo = createGithubVexRepo(githubToken);
-  const octokit = new dist_node.Octokit({ auth: githubToken });
+  const issuesGhRepo = createGithubVexRepo(process.env.GITHUB_TOKEN);
+  const vexGhRepo = createGithubVexRepo(process.env.VEX_GITHUB_TOKEN || process.env.GITHUB_TOKEN);
+  const octokit = new dist_node.Octokit({ auth: process.env.GITHUB_TOKEN });
 
   // Detect latest two tags and default branch in parallel
-  const [{ data: tags }, { data: repoData }] = await Promise.all([
-    octokit.rest.repos.listTags({ owner: repoOwner, repo: repoName, per_page: 2 }),
-    octokit.rest.repos.get({ owner: repoOwner, repo: repoName })
-  ]);
+  const { tags, repoData } = await getRepoDetails(repoOwner, repoName);
   if (!tags.length) { throw new Error('No tags found in repository'); }
   const latestTag = tags[0];
   const previousTag = tags[1] ?? null;
@@ -35514,16 +35650,14 @@ const run = async () => {
   const previousProductId = previousTag ? `${packageName}:${previousTag.name}` : null;
 
   // Read current tag's VEX (may exist from a prior scheduled run)
-  const currentVexResult = await ghRepo.readVexFile({ owner: vexOwner, repo: vexRepo, path: currentVexPath });
+  const currentVexResult = await vexGhRepo.readVexFile({ owner: vexOwner, repo: vexRepo, path: currentVexPath });
   const currentDoc = currentVexResult?.doc ?? null;
   const currentSha = currentVexResult?.sha ?? null;
 
-  const vexDoc = currentDoc
-    ? createVexDocument(currentDoc)
-    : createVexDocument({ title: `${packageName} ${latestTag.name} VEX`, id: `${packageName}-${latestTag.name}` });
+  const vexDoc = createVexDocument(currentDoc || { title: `${packageName} ${latestTag.name} VEX`, id: `${packageName}-${latestTag.name}` });
 
   // Read previous tag's VEX for carry-forward
-  const prevVexResult = prevVexPath ? await ghRepo.readVexFile({ owner: vexOwner, repo: vexRepo, path: prevVexPath }) : null;
+  const prevVexResult = prevVexPath ? await vexGhRepo.readVexFile({ owner: vexOwner, repo: vexRepo, path: prevVexPath }) : null;
   const prevDoc = prevVexResult?.doc ?? null;
   const prevVexDoc = prevDoc ? createVexDocument(prevDoc) : null;
 
@@ -35534,7 +35668,15 @@ const run = async () => {
       const status = prevVexDoc.getCveProductStatus(vuln.cve, previousProductId);
       if (!status) { continue; }
       const justification = prevVexDoc.getCveJustification(vuln.cve, previousProductId);
-      previousStatusMap.set(vuln.cve, { status, justification });
+      const flag = (vuln.flags ?? []).find((f) => f.product_ids?.includes(previousProductId));
+      const remediation = (vuln.remediations ?? []).find((r) => r.product_ids?.includes(previousProductId));
+      previousStatusMap.set(vuln.cve, {
+        status,
+        justification,
+        label: flag?.label ?? null,
+        remediationCategory: remediation?.category ?? null,
+        remediationDetails: remediation?.details ?? null
+      });
     }
   }
 
@@ -35567,38 +35709,40 @@ const run = async () => {
     const existingStatus = vexDoc.getCveProductStatus(cveId, currentProductId);
 
     if (existingStatus !== null) {
-      if (existingStatus === 'under_investigation') {
-        // Still present, still being triaged — remove from previousStatusMap to avoid false "fixed"
-        previousStatusMap.delete(cveId);
-      }
-      // non-null and not under_investigation = human-set status, leave it alone
+      // non-null = human-set status (or under_investigation), leave it alone
+      previousStatusMap.delete(cveId);
       continue;
     }
 
     // New CVE for this product version — carry forward from previous if possible
     const prevSnapshot = previousStatusMap.get(cveId);
     let newStatus = 'under_investigation';
-    let justification = null;
+    const vulnerabilityInfo = {};
 
     if (prevSnapshot?.status === 'known_not_affected') {
       newStatus = 'known_not_affected';
-      justification = prevSnapshot.justification;
+      vulnerabilityInfo.justification = prevSnapshot.justification;
+      vulnerabilityInfo.label = prevSnapshot.label;
     } else if (prevSnapshot?.status === 'known_affected') {
       newStatus = 'known_affected';
-      justification = prevSnapshot.justification;
+      vulnerabilityInfo.justification = prevSnapshot.justification;
+      vulnerabilityInfo.remediationCategory = prevSnapshot.remediationCategory;
+      vulnerabilityInfo.remediationDetails = prevSnapshot.remediationDetails;
+    } else if (!prevSnapshot?.status || prevSnapshot?.status === 'under_investigation') {
+      vulnerabilityInfo.justification = prevSnapshot?.justification || ''; // TODO add URL (preferred) to CVE or description here
     }
 
-    vexDoc.updateVulnerabilityStatus(cveId, currentProductId, newStatus, justification);
+    vexDoc.updateVulnerabilityStatus(cveId, currentProductId, newStatus, vulnerabilityInfo);
+    previousStatusMap.delete(cveId);
   }
 
   // CVEs from previous version no longer detected by Trivy → fixed in this version
   for (const [cveId, prevSnapshot] of previousStatusMap) {
     if (!['under_investigation', 'known_affected'].includes(prevSnapshot.status)) { continue; }
-    if (trivyResults.has(cveId)) { continue; }
 
     const existingStatus = vexDoc.getCveProductStatus(cveId, currentProductId);
     if (existingStatus === null || existingStatus === 'under_investigation') {
-      vexDoc.updateVulnerabilityStatus(cveId, currentProductId, 'fixed');
+      vexDoc.updateVulnerabilityStatus(cveId, currentProductId, 'fixed', { remediationCategory: 'vendor_fix', remediationDetails: 'no longer reporting' });
     }
   }
 
@@ -35612,7 +35756,7 @@ const run = async () => {
     ? `chore: update VEX for ${packageName}@${latestTag.name}`
     : `chore: create VEX for ${packageName}@${latestTag.name}`;
 
-  await ghRepo.writeVexFile({
+  await vexGhRepo.writeVexFile({
     owner: vexOwner,
     repo: vexRepo,
     path: currentVexPath,
@@ -35624,11 +35768,11 @@ const run = async () => {
   console.log(`VEX written: ${currentVexPath}`); */
 
   /* // Manage issues
-  await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-pending' });
-  await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-reflected' });
-  await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: fixedInBranchLabel, color: 'e4e669' });
+  await issuesGhRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-pending' });
+  await issuesGhRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-reflected' });
+  await issuesGhRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: fixedInBranchLabel, color: 'e4e669' });
 
-  const openIssues = await ghRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
+  const openIssues = await issuesGhRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
 
   const updatedDoc = vexDoc.toJson();
 
@@ -35655,16 +35799,16 @@ const run = async () => {
       };
 
       if (!existingIssue) {
-        await ghRepo.openVexIssue(issueArgs);
+        await issuesGhRepo.openVexIssue(issueArgs);
       } else {
-        await ghRepo.updateVexIssue({ ...issueArgs, issue: existingIssue });
+        await issuesGhRepo.updateVexIssue({ ...issueArgs, issue: existingIssue });
       }
     }
 
     if (fixed.includes(currentProductId)) {
       const existingIssue = openIssues.get(cveId);
       if (existingIssue) {
-        await ghRepo.updateVexIssue({
+        await issuesGhRepo.updateVexIssue({
           owner: issuesOwner,
           repo: issuesRepo,
           issue: existingIssue,
@@ -35684,16 +35828,16 @@ const run = async () => {
   const headCveIds = new Set([...parseTrivyResults(trivyHeadOutput).keys()]);
 
   // Re-fetch open issues since some may have been closed above
-  const remainingOpenIssues = await ghRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
+  const remainingOpenIssues = await issuesGhRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
 
   await forEachSerialP([...remainingOpenIssues.entries()], async ([cveId, issue]) => {
     const isFixedInHead = !headCveIds.has(cveId);
     const hasLabel = issue.labels?.some((l) => l.name === fixedInBranchLabel);
 
     if (isFixedInHead && !hasLabel) {
-      await ghRepo.addLabels({ owner: issuesOwner, repo: issuesRepo, issueNumber: issue.number, labels: [fixedInBranchLabel] });
+      await issuesGhRepo.addLabels({ owner: issuesOwner, repo: issuesRepo, issueNumber: issue.number, labels: [fixedInBranchLabel] });
     } else if (!isFixedInHead && hasLabel) {
-      await ghRepo.removeLabel({ owner: issuesOwner, repo: issuesRepo, issueNumber: issue.number, name: fixedInBranchLabel });
+      await issuesGhRepo.removeLabel({ owner: issuesOwner, repo: issuesRepo, issueNumber: issue.number, name: fixedInBranchLabel });
     }
   }); */
 

@@ -1,7 +1,6 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { posix } from 'node:path';
-import { Octokit } from '@octokit/rest';
 import { forEachSerialP } from 'omnibelt';
 import { createVexDocument } from '../src/csaf.js';
 import { createGithubVexRepo } from '../src/github.js';
@@ -64,7 +63,6 @@ const trivyScan = (args, env) => {
 };
 
 const run = async () => {
-  const githubToken = getInput('github_token');
   const vexRepoInput = getInput('vex_repo');
   const issuesRepoInput = getInput('issues_repo') || process.env.GITHUB_REPOSITORY;
   const vexRepoDir = getInput('vex_repo_dir') || '';
@@ -83,14 +81,11 @@ const run = async () => {
 
   console.log(`Package: ${packageName}, repo: ${repoOwner}/${repoName}`);
 
-  const ghRepo = createGithubVexRepo(githubToken);
-  const octokit = new Octokit({ auth: githubToken });
+  const issuesGhRepo = createGithubVexRepo(process.env.GITHUB_TOKEN);
+  const vexGhRepo = createGithubVexRepo(process.env.VEX_GITHUB_TOKEN || process.env.GITHUB_TOKEN);
 
   // Detect latest two tags and default branch in parallel
-  const [{ data: tags }, { data: repoData }] = await Promise.all([
-    octokit.rest.repos.listTags({ owner: repoOwner, repo: repoName, per_page: 2 }),
-    octokit.rest.repos.get({ owner: repoOwner, repo: repoName })
-  ]);
+  const { tags, repoData } = await getRepoDetails(repoOwner, repoName);
   if (!tags.length) { throw new Error('No tags found in repository'); }
   const latestTag = tags[0];
   const previousTag = tags[1] ?? null;
@@ -104,14 +99,14 @@ const run = async () => {
   const previousProductId = previousTag ? `${packageName}:${previousTag.name}` : null;
 
   // Read current tag's VEX (may exist from a prior scheduled run)
-  const currentVexResult = await ghRepo.readVexFile({ owner: vexOwner, repo: vexRepo, path: currentVexPath });
+  const currentVexResult = await vexGhRepo.readVexFile({ owner: vexOwner, repo: vexRepo, path: currentVexPath });
   const currentDoc = currentVexResult?.doc ?? null;
   const currentSha = currentVexResult?.sha ?? null;
 
   const vexDoc = createVexDocument(currentDoc || { title: `${packageName} ${latestTag.name} VEX`, id: `${packageName}-${latestTag.name}` });
 
   // Read previous tag's VEX for carry-forward
-  const prevVexResult = prevVexPath ? await ghRepo.readVexFile({ owner: vexOwner, repo: vexRepo, path: prevVexPath }) : null;
+  const prevVexResult = prevVexPath ? await vexGhRepo.readVexFile({ owner: vexOwner, repo: vexRepo, path: prevVexPath }) : null;
   const prevDoc = prevVexResult?.doc ?? null;
   const prevVexDoc = prevDoc ? createVexDocument(prevDoc) : null;
 
@@ -210,7 +205,7 @@ const run = async () => {
     ? `chore: update VEX for ${packageName}@${latestTag.name}`
     : `chore: create VEX for ${packageName}@${latestTag.name}`;
 
-  await ghRepo.writeVexFile({
+  await vexGhRepo.writeVexFile({
     owner: vexOwner,
     repo: vexRepo,
     path: currentVexPath,
@@ -222,11 +217,11 @@ const run = async () => {
   console.log(`VEX written: ${currentVexPath}`); */
 
   /* // Manage issues
-  await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-pending' });
-  await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-reflected' });
-  await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: fixedInBranchLabel, color: 'e4e669' });
+  await issuesGhRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-pending' });
+  await issuesGhRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-reflected' });
+  await issuesGhRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: fixedInBranchLabel, color: 'e4e669' });
 
-  const openIssues = await ghRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
+  const openIssues = await issuesGhRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
 
   const updatedDoc = vexDoc.toJson();
 
@@ -253,16 +248,16 @@ const run = async () => {
       };
 
       if (!existingIssue) {
-        await ghRepo.openVexIssue(issueArgs);
+        await issuesGhRepo.openVexIssue(issueArgs);
       } else {
-        await ghRepo.updateVexIssue({ ...issueArgs, issue: existingIssue });
+        await issuesGhRepo.updateVexIssue({ ...issueArgs, issue: existingIssue });
       }
     }
 
     if (fixed.includes(currentProductId)) {
       const existingIssue = openIssues.get(cveId);
       if (existingIssue) {
-        await ghRepo.updateVexIssue({
+        await issuesGhRepo.updateVexIssue({
           owner: issuesOwner,
           repo: issuesRepo,
           issue: existingIssue,
@@ -282,16 +277,16 @@ const run = async () => {
   const headCveIds = new Set([...parseTrivyResults(trivyHeadOutput).keys()]);
 
   // Re-fetch open issues since some may have been closed above
-  const remainingOpenIssues = await ghRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
+  const remainingOpenIssues = await issuesGhRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
 
   await forEachSerialP([...remainingOpenIssues.entries()], async ([cveId, issue]) => {
     const isFixedInHead = !headCveIds.has(cveId);
     const hasLabel = issue.labels?.some((l) => l.name === fixedInBranchLabel);
 
     if (isFixedInHead && !hasLabel) {
-      await ghRepo.addLabels({ owner: issuesOwner, repo: issuesRepo, issueNumber: issue.number, labels: [fixedInBranchLabel] });
+      await issuesGhRepo.addLabels({ owner: issuesOwner, repo: issuesRepo, issueNumber: issue.number, labels: [fixedInBranchLabel] });
     } else if (!isFixedInHead && hasLabel) {
-      await ghRepo.removeLabel({ owner: issuesOwner, repo: issuesRepo, issueNumber: issue.number, name: fixedInBranchLabel });
+      await issuesGhRepo.removeLabel({ owner: issuesOwner, repo: issuesRepo, issueNumber: issue.number, name: fixedInBranchLabel });
     }
   }); */
 
