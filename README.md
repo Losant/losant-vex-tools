@@ -51,8 +51,7 @@ jobs:
 | Input | Required | Default | Description |
 |---|---|---|---|
 | `vex_repo` | yes | — | `owner/repo` where CSAF VEX files are stored. The token must have `contents:write` on this repo. |
-| `github_token` | yes | — | Token with `contents:write` on `vex_repo` and `issues:write` on `issues_repo`. |
-| `issues_repo` | no | calling repo | `owner/repo` where `vex-pending` issues are filed. Defaults to `GITHUB_REPOSITORY`. |
+| `github_token` | yes | — | Token with `contents:write` on `vex_repo` and `issues:write` on the calling repository. |
 | `vex_repo_dir` | no | `packages` | Directory prefix within `vex_repo` for CSAF files. Files are written at `<vex_repo_dir>/<package-name>/<tag>.csaf.json`. |
 | `package_name` | no | from `package.json` | npm package name. If omitted, read from `package.json` in the workspace (requires `actions/checkout`). |
 | `min_severity` | no | `HIGH` | Minimum severity to open a `vex-pending` issue: `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`. All severities are still recorded in the CSAF file regardless of this threshold. |

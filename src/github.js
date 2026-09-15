@@ -400,7 +400,7 @@ export const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) =>
       octokit.rest.repos.listTags({ owner: repoOwner, repo: repoName, per_page: 2 }),
       octokit.rest.repos.get({ owner: repoOwner, repo: repoName })
     ]);
-    return { tags, repoData }
+    return { tags, repoData };
   };
 
   return {

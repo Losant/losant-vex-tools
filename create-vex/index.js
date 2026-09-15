@@ -23,7 +23,7 @@ const UI_MAP = { N: 'NONE', R: 'REQUIRED' };
 const parseCvssVector = (cvssObj) => {
   const v3 = cvssObj?.nvd?.V3Vector ?? cvssObj?.redhat?.V3Vector ?? null;
   const score = cvssObj?.nvd?.V3Score ?? cvssObj?.redhat?.V3Score ?? null;
-  if (!v3 || score == null) { return null; }
+  if (!v3 || score === null) { return null; }
   const parts = Object.fromEntries(v3.split('/').slice(1).map((p) => p.split(':')));
   return {
     score,
@@ -44,7 +44,7 @@ const parseTrivyResults = (trivyOutput) => {
         severity: vuln.Severity ?? 'UNKNOWN',
         cvss: parseCvssVector(vuln.CVSS),
         packages: [],
-        referenceUrl: vuln.References?.find((r) => r.includes('nvd.nist.gov')) ?? vuln.References?.[0] ?? null
+        referenceUrl: vuln.PrimaryURL ?? vuln.References?.find((r) => r.includes('nvd.nist.gov')) ?? vuln.References?.[0] ?? null
       };
       existing.packages.push({
         name: vuln.PkgName,
@@ -60,6 +60,127 @@ const parseTrivyResults = (trivyOutput) => {
 
 const trivyScan = (args, env) => {
   execSync(`trivy ${args} --format json --scanners vuln --no-progress --quiet`, { stdio: ['ignore', 'ignore', 'inherit'], env });
+};
+
+const joinVexPath = (...parts) => posix.join(...parts).replace(/^\//, '');
+
+const updateVexDocWithTrivyFindings = (vexDoc, trivyResults, previousStatusMap, currentProductId) => {
+  // Apply carry-forward and update statuses
+  for (const [cveId, trivyVuln] of trivyResults) {
+    const existingStatus = vexDoc.getCveProductStatus(cveId, currentProductId);
+
+    if (existingStatus !== null) {
+      // non-null = human-set status (or under_investigation), leave it alone
+      previousStatusMap.delete(cveId);
+      continue;
+    }
+
+    // New CVE for this product version — carry forward from previous if possible
+    const prevSnapshot = previousStatusMap.get(cveId);
+    let newStatus = 'under_investigation';
+    const vulnerabilityInfo = {};
+
+    if (prevSnapshot?.status === 'known_not_affected') {
+      newStatus = 'known_not_affected';
+      vulnerabilityInfo.justification = prevSnapshot.justification;
+      vulnerabilityInfo.label = prevSnapshot.label;
+    } else if (prevSnapshot?.status === 'known_affected') {
+      newStatus = 'known_affected';
+      vulnerabilityInfo.justification = prevSnapshot.justification;
+      vulnerabilityInfo.remediationCategory = prevSnapshot.remediationCategory;
+      vulnerabilityInfo.remediationDetails = prevSnapshot.remediationDetails;
+    } else if (!prevSnapshot?.status || prevSnapshot?.status === 'under_investigation') {
+      vulnerabilityInfo.justification = prevSnapshot?.justification || trivyVuln.referenceUrl || `https://nvd.nist.gov/vuln/detail/${cveId}`;
+    }
+
+    vexDoc.updateVulnerabilityStatus(cveId, currentProductId, newStatus, vulnerabilityInfo);
+    previousStatusMap.delete(cveId);
+  }
+
+  // CVEs from previous version no longer detected by Trivy → fixed in this version
+  for (const [cveId, prevSnapshot] of previousStatusMap) {
+    if (!['under_investigation', 'known_affected'].includes(prevSnapshot.status)) { continue; }
+
+    const existingStatus = vexDoc.getCveProductStatus(cveId, currentProductId);
+    if (existingStatus === null || existingStatus === 'under_investigation') {
+      vexDoc.updateVulnerabilityStatus(cveId, currentProductId, 'fixed', { remediationCategory: 'vendor_fix', remediationDetails: 'no longer reporting' });
+    }
+  }
+};
+
+const manageIssues = async (ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
+  issuesOwner, issuesRepo, fixedInBranchLabel, currentVexPath, currentProductId, previousProductId, minSeverity
+}) => {
+  await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-pending' });
+  await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-reflected' });
+  await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: fixedInBranchLabel, color: 'e4e669' });
+
+  const openIssues = await ghRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
+  const updatedDoc = vexDoc.toJson();
+
+  await forEachSerialP(updatedDoc.vulnerabilities, async (vuln) => {
+    const { cve: cveId, product_status: ps } = vuln;
+    const underInvestigation = ps?.under_investigation ?? [];
+    const fixed = ps?.fixed ?? [];
+
+    if (underInvestigation.includes(currentProductId)) {
+      const finding = trivyResults.get(cveId);
+      if (!finding || !meetsMinSeverity(finding.severity, minSeverity)) { return; }
+
+      const existingIssue = openIssues.get(cveId);
+      const issueArgs = {
+        owner: issuesOwner,
+        repo: issuesRepo,
+        cveId,
+        vexPath: currentVexPath,
+        productIds: [currentProductId],
+        severity: finding.severity,
+        referenceUrl: finding.referenceUrl,
+        packages: finding.packages,
+        cvss: finding.cvss
+      };
+
+      if (!existingIssue) {
+        await ghRepo.openVexIssue(issueArgs);
+      } else {
+        await ghRepo.updateVexIssue({ ...issueArgs, issue: existingIssue });
+      }
+    }
+
+    if (fixed.includes(currentProductId)) {
+      const existingIssue = openIssues.get(cveId);
+      if (existingIssue) {
+        await ghRepo.updateVexIssue({
+          owner: issuesOwner,
+          repo: issuesRepo,
+          issue: existingIssue,
+          cveId,
+          vexPath: currentVexPath,
+          productIds: [],
+          fixedProductIds: [previousProductId ?? currentProductId]
+        });
+      }
+    }
+  });
+
+  // Check if CVEs are fixed in the default branch (HEAD)
+  trivyScan(`repo ${repoUrl} --output /tmp/trivy-head.json`, trivyEnv);
+  const trivyHeadOutput = JSON.parse(readFileSync('/tmp/trivy-head.json', 'utf-8'));
+  const headCveIds = new Set([...parseTrivyResults(trivyHeadOutput).keys()]);
+
+  // Re-fetch open issues since some may have been closed above
+  const remainingOpenIssues = await ghRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
+
+  await forEachSerialP([...remainingOpenIssues.entries()], async ([cveId, issue]) => {
+    const isFixedInHead = !headCveIds.has(cveId);
+    const hasLabel = issue.labels?.some((l) => l.name === fixedInBranchLabel);
+
+    if (isFixedInHead && !hasLabel) {
+      await ghRepo.addLabels({ owner: issuesOwner, repo: issuesRepo, issueNumber: issue.number, labels: [fixedInBranchLabel] });
+    } else if (!isFixedInHead && hasLabel) {
+      await ghRepo.removeLabel({ owner: issuesOwner, repo: issuesRepo, issueNumber: issue.number, name: fixedInBranchLabel });
+    }
+  });
 };
 
 const run = async () => {
@@ -81,18 +202,17 @@ const run = async () => {
 
   console.log(`Package: ${packageName}, repo: ${repoOwner}/${repoName}`);
 
-  const issuesGhRepo = createGithubVexRepo(process.env.GITHUB_TOKEN);
+  const ghRepo = createGithubVexRepo(process.env.GITHUB_TOKEN);
   const vexGhRepo = createGithubVexRepo(process.env.VEX_GITHUB_TOKEN || process.env.GITHUB_TOKEN);
 
   // Detect latest two tags and default branch in parallel
-  const { tags, repoData } = await getRepoDetails(repoOwner, repoName);
+  const { tags, repoData } = await ghRepo.getRepoDetails(repoOwner, repoName);
   if (!tags.length) { throw new Error('No tags found in repository'); }
   const latestTag = tags[0];
   const previousTag = tags[1] ?? null;
   const fixedInBranchLabel = `fixed-in-${repoData.default_branch}`;
 
   console.log(`Latest tag: ${latestTag.name}${previousTag ? `, previous: ${previousTag.name}` : ''}, default branch: ${repoData.default_branch}`);
-  const joinVexPath = (...parts) => posix.join(...parts).replace(/^\//, '');
   const currentVexPath = joinVexPath(vexRepoDir || '.', packageName, `${latestTag.name}.csaf.json`);
   const prevVexPath = previousTag ? joinVexPath(vexRepoDir || '.', packageName, `${previousTag.name}.csaf.json`) : null;
   const currentProductId = `${packageName}:${latestTag.name}`;
@@ -153,47 +273,7 @@ const run = async () => {
     purl: `pkg:npm/${packageName}@${semver}`
   });
 
-  // Apply carry-forward and update statuses
-  for (const [cveId] of trivyResults) {
-    const existingStatus = vexDoc.getCveProductStatus(cveId, currentProductId);
-
-    if (existingStatus !== null) {
-      // non-null = human-set status (or under_investigation), leave it alone
-      previousStatusMap.delete(cveId);
-      continue;
-    }
-
-    // New CVE for this product version — carry forward from previous if possible
-    const prevSnapshot = previousStatusMap.get(cveId);
-    let newStatus = 'under_investigation';
-    const vulnerabilityInfo = {};
-
-    if (prevSnapshot?.status === 'known_not_affected') {
-      newStatus = 'known_not_affected';
-      vulnerabilityInfo.justification = prevSnapshot.justification;
-      vulnerabilityInfo.label = prevSnapshot.label;
-    } else if (prevSnapshot?.status === 'known_affected') {
-      newStatus = 'known_affected';
-      vulnerabilityInfo.justification = prevSnapshot.justification;
-      vulnerabilityInfo.remediationCategory = prevSnapshot.remediationCategory;
-      vulnerabilityInfo.remediationDetails = prevSnapshot.remediationDetails;
-    } else if (!prevSnapshot?.status || prevSnapshot?.status === 'under_investigation') {
-      vulnerabilityInfo.justification = prevSnapshot?.justification || ''; // TODO add URL (preferred) to CVE or description here
-    }
-
-    vexDoc.updateVulnerabilityStatus(cveId, currentProductId, newStatus, vulnerabilityInfo);
-    previousStatusMap.delete(cveId);
-  }
-
-  // CVEs from previous version no longer detected by Trivy → fixed in this version
-  for (const [cveId, prevSnapshot] of previousStatusMap) {
-    if (!['under_investigation', 'known_affected'].includes(prevSnapshot.status)) { continue; }
-
-    const existingStatus = vexDoc.getCveProductStatus(cveId, currentProductId);
-    if (existingStatus === null || existingStatus === 'under_investigation') {
-      vexDoc.updateVulnerabilityStatus(cveId, currentProductId, 'fixed', { remediationCategory: 'vendor_fix', remediationDetails: 'no longer reporting' });
-    }
-  }
+  updateVexDocWithTrivyFindings(vexDoc, trivyResults, previousStatusMap, currentProductId);
 
   vexDoc.incrementVersion();
 
@@ -201,7 +281,7 @@ const run = async () => {
   writeFileSync('/tmp/vex-output.json', JSON.stringify(vexDoc.toJson(), null, 2));
   console.log('VEX written to /tmp/vex-output.json');
 
-  /* const commitMsg = currentDoc
+  const commitMsg = currentDoc
     ? `chore: update VEX for ${packageName}@${latestTag.name}`
     : `chore: create VEX for ${packageName}@${latestTag.name}`;
 
@@ -214,81 +294,12 @@ const run = async () => {
     message: commitMsg
   });
 
-  console.log(`VEX written: ${currentVexPath}`); */
+  console.log(`VEX written: ${currentVexPath}`);
 
-  /* // Manage issues
-  await issuesGhRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-pending' });
-  await issuesGhRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-reflected' });
-  await issuesGhRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: fixedInBranchLabel, color: 'e4e669' });
-
-  const openIssues = await issuesGhRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
-
-  const updatedDoc = vexDoc.toJson();
-
-  await forEachSerialP(updatedDoc.vulnerabilities, async (vuln) => {
-    const { cve: cveId, product_status: ps } = vuln;
-    const underInvestigation = ps?.under_investigation ?? [];
-    const fixed = ps?.fixed ?? [];
-
-    if (underInvestigation.includes(currentProductId)) {
-      const finding = trivyResults.get(cveId);
-      if (!finding || !meetsMinSeverity(finding.severity, minSeverity)) { return; }
-
-      const existingIssue = openIssues.get(cveId);
-      const issueArgs = {
-        owner: issuesOwner,
-        repo: issuesRepo,
-        cveId,
-        vexPath: currentVexPath,
-        productIds: [currentProductId],
-        severity: finding.severity,
-        referenceUrl: finding.referenceUrl,
-        packages: finding.packages,
-        cvss: finding.cvss
-      };
-
-      if (!existingIssue) {
-        await issuesGhRepo.openVexIssue(issueArgs);
-      } else {
-        await issuesGhRepo.updateVexIssue({ ...issueArgs, issue: existingIssue });
-      }
-    }
-
-    if (fixed.includes(currentProductId)) {
-      const existingIssue = openIssues.get(cveId);
-      if (existingIssue) {
-        await issuesGhRepo.updateVexIssue({
-          owner: issuesOwner,
-          repo: issuesRepo,
-          issue: existingIssue,
-          cveId,
-          vexPath: currentVexPath,
-          productIds: [],
-          fixedProductIds: [previousProductId ?? currentProductId]
-        });
-      }
-    }
+  // Manage issues
+  await manageIssues(ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
+    issuesOwner, issuesRepo, fixedInBranchLabel, currentVexPath, currentProductId, previousProductId, minSeverity
   });
-
-  // Check if CVEs are fixed in the default branch (HEAD)
-  trivyScan(`repo ${repoUrl} --output /tmp/trivy-head.json`, trivyEnv);
-
-  const trivyHeadOutput = JSON.parse(readFileSync('/tmp/trivy-head.json', 'utf-8'));
-  const headCveIds = new Set([...parseTrivyResults(trivyHeadOutput).keys()]);
-
-  // Re-fetch open issues since some may have been closed above
-  const remainingOpenIssues = await issuesGhRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
-
-  await forEachSerialP([...remainingOpenIssues.entries()], async ([cveId, issue]) => {
-    const isFixedInHead = !headCveIds.has(cveId);
-    const hasLabel = issue.labels?.some((l) => l.name === fixedInBranchLabel);
-
-    if (isFixedInHead && !hasLabel) {
-      await issuesGhRepo.addLabels({ owner: issuesOwner, repo: issuesRepo, issueNumber: issue.number, labels: [fixedInBranchLabel] });
-    } else if (!isFixedInHead && hasLabel) {
-      await issuesGhRepo.removeLabel({ owner: issuesOwner, repo: issuesRepo, issueNumber: issue.number, name: fixedInBranchLabel });
-    }
-  }); */
 
   console.log('Done.');
 };
