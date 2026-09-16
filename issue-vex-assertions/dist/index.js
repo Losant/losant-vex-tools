@@ -31369,15 +31369,9 @@ const createVexDocument = (docOrOptions, { publisher } = {}) => {
   };
 
   const upsertProduct = ({ name, productId, productName, purl }) => {
-    products.set(productId, {
-      category: 'product_version',
-      name,
-      product: {
-        name: productName ?? name,
-        product_id: productId,
-        product_identification_helper: { purl }
-      }
-    });
+    const product = { name: productName ?? name, product_id: productId };
+    if (purl) { product.product_identification_helper = { purl }; }
+    products.set(productId, { category: 'product_version', name, product });
   };
 
   const updateVulnerabilityStatus = (cveId, productId, status, { justification, label, remediationCategory, remediationDetails } = {}) => {
@@ -31437,13 +31431,23 @@ const createVexDocument = (docOrOptions, { publisher } = {}) => {
 
   const getProducts = () => [...products.values()];
 
-  const getCveJustification = (cveId, productId) => {
+  const getCveProductSnapshot = (cveId, productId) => {
     const vuln = vulnerabilities.get(cveId);
     if (!vuln) { return null; }
-    for (const [details, ids] of vuln.threats) {
-      if (ids.has(productId)) { return details; }
+    let justification = null;
+    for (const [, entry] of vuln.threats) {
+      if (entry.ids.has(productId)) { justification = entry.details; break; }
     }
-    return null;
+    let label = null;
+    for (const [lbl, ids] of vuln.flags) {
+      if (ids.has(productId)) { label = lbl; break; }
+    }
+    let remediationCategory = null;
+    let remediationDetails = null;
+    for (const [, rem] of vuln.remediations) {
+      if (rem.ids.has(productId)) { remediationCategory = rem.category; remediationDetails = rem.details; break; }
+    }
+    return { justification, label, remediationCategory, remediationDetails };
   };
 
   return {
@@ -31453,7 +31457,7 @@ const createVexDocument = (docOrOptions, { publisher } = {}) => {
     incrementVersion,
     getProducts,
     getCveProductStatus,
-    getCveJustification
+    getCveProductSnapshot
   };
 };
 

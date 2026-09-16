@@ -55,6 +55,7 @@ jobs:
 | `vex_repo` | no | `GITHUB_REPOSITORY` | `owner/repo` where CSAF VEX files are stored. Defaults to the calling repository. |
 | `vex_repo_dir` | no | empty | Directory prefix within `vex_repo` for CSAF files. When omitted, files are written at `<package-name>/<tag>.csaf.json`. When set, files are written at `<vex_repo_dir>/<package-name>/<tag>.csaf.json`. |
 | `package_name` | no | repository name | Package or product name used in the CSAF file and VEX path. |
+| `purl_type` | no | auto-detected | PURL package type for product identification (e.g. `npm`, `pypi`, `gem`, `cargo`, `golang`). Auto-detected from `package.json`, `pyproject.toml`/`setup.py`, or `Gemfile`/`Gemfile.lock` when omitted. Required when auto-detection fails — the action will error if the type cannot be determined, since Trivy needs a valid PURL to match the VEX file on subsequent runs. |
 | `min_severity` | no | `HIGH` | Minimum severity to open a `vex-pending` issue: `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`. All severities are still recorded in the CSAF file regardless of this threshold. |
 | `disable_issues` | no | `false` | Set to `true` to skip all issue creation and updates entirely. |
 
@@ -145,7 +146,7 @@ Processes recently closed `vex-pending` issues in the calling repository, writes
 
 ### Building the action
 
-The action runs from a compiled bundle at `issue-vex-assertions/dist/index.js`. Rebuild all action bundles after any source change:
+The action runs from a compiled bundle at `<action-name>/dist/index.js`. Rebuild all action bundles after any source change:
 
 ```sh
 pnpm build:actions
@@ -187,7 +188,7 @@ const doc = createVexDocument(existingCsafJson);
 | `updateVulnerabilityStatus(cveId, productId, status, { justification, label, remediationCategory, remediationDetails })` | Sets the VEX status for a product within a vulnerability. Moves the product between status buckets and updates threats, flags, remediations, and notes as appropriate for the status. Valid statuses: `known_not_affected`, `known_affected`, `fixed`, `under_investigation`. |
 | `incrementVersion()` | Bumps the document version number, updates `current_release_date`, and appends a revision history entry. |
 | `getCveProductStatus(cveId, productId)` | Returns the current status string for a product/CVE pair, or `null` if not set. |
-| `getCveJustification(cveId, productId)` | Returns the justification string from the `threats` entry for a product/CVE pair, or `null` if none is recorded. |
+| `getCveProductSnapshot(cveId, productId)` | Returns `{ justification, label, remediationCategory, remediationDetails }` for a product/CVE pair, reading from the internal threats, flags, and remediations maps. All fields are `null` if not set. Returns `null` if the CVE is not present. |
 | `getProducts()` | Returns all product branch entries from the `product_tree`. |
 | `toJson()` | Serializes the document to a plain CSAF 2.0 JSON object ready for storage. |
 

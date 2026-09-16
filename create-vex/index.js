@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync } from 'node:fs';
-import { execSync } from 'node:child_process';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { posix } from 'node:path';
 import { forEachSerialP } from 'omnibelt';
 import { createVexDocument } from '../src/csaf.js';
@@ -59,10 +59,20 @@ const parseTrivyResults = (trivyOutput) => {
 };
 
 const trivyScan = (args, env) => {
-  execSync(`trivy ${args} --format json --scanners vuln --no-progress --quiet`, { stdio: ['ignore', 'ignore', 'inherit'], env });
+  execFileSync('trivy', [...args, '--format', 'json', '--scanners', 'vuln', '--no-progress', '--quiet'], { stdio: ['ignore', 'ignore', 'inherit'], env });
 };
 
 const joinVexPath = (...parts) => posix.join(...parts).replace(/^\//, '');
+
+const detectPurlType = () => {
+  const ws = process.env.GITHUB_WORKSPACE ?? '.';
+  if (existsSync(`${ws}/package.json`)) { return 'npm'; }
+  if (existsSync(`${ws}/pyproject.toml`) || existsSync(`${ws}/setup.py`)) { return 'pypi'; }
+  if (existsSync(`${ws}/Gemfile.lock`) || existsSync(`${ws}/Gemfile`)) { return 'gem'; }
+  return null;
+};
+
+const buildPurl = (type, name, version) => `pkg:${type.toLowerCase()}/${name}@${version}`;
 
 const updateVexDocWithTrivyFindings = (vexDoc, trivyResults, previousStatusMap, currentProductId) => {
   // Apply carry-forward and update statuses
@@ -70,7 +80,7 @@ const updateVexDocWithTrivyFindings = (vexDoc, trivyResults, previousStatusMap, 
     const existingStatus = vexDoc.getCveProductStatus(cveId, currentProductId);
 
     if (existingStatus !== null) {
-      // non-null = human-set status (or under_investigation), leave it alone
+      // already added to vex file - this action should not try to update an existing VEX status - that's issue-vex-assertions job
       previousStatusMap.delete(cveId);
       continue;
     }
@@ -109,7 +119,7 @@ const updateVexDocWithTrivyFindings = (vexDoc, trivyResults, previousStatusMap, 
 };
 
 const manageIssues = async (ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
-  issuesOwner, issuesRepo, fixedInBranchLabel, currentVexPath, currentProductId, previousProductId, minSeverity
+  issuesOwner, issuesRepo, fixedInBranchLabel, currentVexPath, oldVexPath, currentProductId, previousProductId, minSeverity
 }) => {
   await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-pending' });
   await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-reflected' });
@@ -133,6 +143,7 @@ const manageIssues = async (ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
         repo: issuesRepo,
         cveId,
         vexPath: currentVexPath,
+        oldVexPath,
         productIds: [currentProductId],
         severity: finding.severity,
         referenceUrl: finding.referenceUrl,
@@ -156,6 +167,7 @@ const manageIssues = async (ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
           issue: existingIssue,
           cveId,
           vexPath: currentVexPath,
+          oldVexPath,
           productIds: [],
           fixedProductIds: [previousProductId ?? currentProductId]
         });
@@ -164,7 +176,7 @@ const manageIssues = async (ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
   });
 
   // Check if CVEs are fixed in the default branch (HEAD)
-  trivyScan(`repo ${repoUrl} --output /tmp/trivy-head.json`, trivyEnv);
+  trivyScan(['repo', repoUrl, '--output', '/tmp/trivy-head.json'], trivyEnv);
   const trivyHeadOutput = JSON.parse(readFileSync('/tmp/trivy-head.json', 'utf-8'));
   const headCveIds = new Set([...parseTrivyResults(trivyHeadOutput).keys()]);
 
@@ -194,6 +206,8 @@ const run = async () => {
   const [vexOwner, vexRepo] = vexRepoInput.split('/');
 
   const packageName = getInput('package_name') || repoName;
+  const purlType = getInput('purl_type') || detectPurlType();
+  if (!purlType) { throw new Error('Could not detect package type. Set the purl_type input (e.g. npm, pypi, gem, cargo, golang).'); }
 
   console.log(`Package: ${packageName}, repo: ${repoOwner}/${repoName}`);
 
@@ -231,15 +245,10 @@ const run = async () => {
     for (const vuln of prevDoc.vulnerabilities ?? []) {
       const status = prevVexDoc.getCveProductStatus(vuln.cve, previousProductId);
       if (!status) { continue; }
-      const justification = prevVexDoc.getCveJustification(vuln.cve, previousProductId);
-      const flag = (vuln.flags ?? []).find((f) => f.product_ids?.includes(previousProductId));
-      const remediation = (vuln.remediations ?? []).find((r) => r.product_ids?.includes(previousProductId));
+      const snapshot = prevVexDoc.getCveProductSnapshot(vuln.cve, previousProductId);
       previousStatusMap.set(vuln.cve, {
         status,
-        justification,
-        label: flag?.label ?? null,
-        remediationCategory: remediation?.category ?? null,
-        remediationDetails: remediation?.details ?? null
+        ...snapshot
       });
     }
   }
@@ -247,12 +256,11 @@ const run = async () => {
   // Trivy scan the tagged version, suppressing already-assessed CVEs using the current VEX if it exists
   const trivyEnv = { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR };
   const repoUrl = `https://github.com/${repoOwner}/${repoName}`;
-  let vexFlag = '';
+  const vexArgs = currentDoc ? ['--vex', '/tmp/current-vex.json'] : [];
   if (currentDoc) {
     writeFileSync('/tmp/current-vex.json', JSON.stringify(currentDoc));
-    vexFlag = '--vex /tmp/current-vex.json';
   }
-  trivyScan(`repo --tag ${latestTag.name} ${repoUrl} ${vexFlag} --output /tmp/trivy-tag.json`, trivyEnv);
+  trivyScan(['repo', '--tag', latestTag.name, repoUrl, ...vexArgs, '--output', '/tmp/trivy-tag.json'], trivyEnv);
 
   const trivyTagOutput = JSON.parse(readFileSync('/tmp/trivy-tag.json', 'utf-8'));
   const trivyResults = parseTrivyResults(trivyTagOutput);
@@ -265,7 +273,7 @@ const run = async () => {
     name: packageName,
     productId: currentProductId,
     productName: `${packageName} ${latestTag.name}`,
-    purl: `pkg:npm/${packageName}@${semver}`
+    purl: buildPurl(purlType, packageName, semver)
   });
 
   updateVexDocWithTrivyFindings(vexDoc, trivyResults, previousStatusMap, currentProductId);
@@ -297,7 +305,7 @@ const run = async () => {
   // Manage issues
   if (!disableIssues) {
     await manageIssues(ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
-      issuesOwner: repoOwner, issuesRepo: repoName, fixedInBranchLabel, currentVexPath, currentProductId, previousProductId, minSeverity
+      issuesOwner: repoOwner, issuesRepo: repoName, fixedInBranchLabel, currentVexPath, oldVexPath: prevVexPath, currentProductId, previousProductId, minSeverity
     });
   }
 

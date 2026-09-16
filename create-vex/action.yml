@@ -10,6 +10,9 @@ inputs:
   package_name:
     required: false
     description: 'Package or product name used in the CSAF file and VEX path (default: repository name)'
+  purl_type:
+    required: false
+    description: 'PURL package type for product identification (e.g. npm, pypi, gem, cargo, golang). Auto-detected from package.json / pyproject.toml / Gemfile.lock when omitted; required if detection fails.'
   min_severity:
     required: false
     description: 'Minimum severity to open issues: CRITICAL, HIGH, MEDIUM, or LOW'
