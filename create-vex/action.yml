@@ -2,25 +2,25 @@ name: Create VEX
 description: 'Scan the latest git tag with Trivy and create or update a CSAF 2.0 VEX file. Opens GitHub Issues for new CVEs requiring human triage.'
 inputs:
   vex_repo:
-    required: true
-    description: 'owner/repo where CSAF VEX files are stored'
-  issues_repo:
     required: false
-    description: 'owner/repo where vex-pending issues are filed (default: the repo running this action)'
+    description: 'owner/repo where CSAF VEX files are stored (default: GITHUB_REPOSITORY)'
   vex_repo_dir:
     required: false
-    description: 'Directory prefix within vex_repo for CSAF files'
-    default: 'packages'
+    description: 'Directory prefix within vex_repo for CSAF files. Defaults to empty (files at <package-name>/<tag>.csaf.json).'
   package_name:
     required: false
-    description: 'npm package name (default: reads from package.json in workspace)'
+    description: 'Package or product name used in the CSAF file and VEX path (default: repository name)'
   min_severity:
     required: false
     description: 'Minimum severity to open issues: CRITICAL, HIGH, MEDIUM, or LOW'
     default: 'HIGH'
+  disable_issues:
+    required: false
+    description: 'Disable the creation or updating of all issues'
+    default: false
 
 # Required environment variables (set in your workflow's env or step env):
-#   GITHUB_TOKEN      - token with read access to the current repo and issues:write on issues_repo
+#   GITHUB_TOKEN      - token with read access to the current repo and issues:write on the current repo
 #   VEX_GITHUB_TOKEN  - token with contents:write on vex_repo; falls back to GITHUB_TOKEN
 
 runs:

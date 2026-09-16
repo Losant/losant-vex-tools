@@ -44,7 +44,7 @@ const parseTrivyResults = (trivyOutput) => {
         severity: vuln.Severity ?? 'UNKNOWN',
         cvss: parseCvssVector(vuln.CVSS),
         packages: [],
-        referenceUrl: vuln.PrimaryURL ?? vuln.References?.find((r) => r.includes('nvd.nist.gov')) ?? vuln.References?.[0] ?? null
+        referenceUrl: vuln.References?.find((r) => r.includes('nvd.nist.gov')) ?? vuln.References?.[0] ?? vuln.PrimaryURL ?? null
       };
       existing.packages.push({
         name: vuln.PkgName,
@@ -184,21 +184,16 @@ const manageIssues = async (ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
 };
 
 const run = async () => {
-  const vexRepoInput = getInput('vex_repo');
-  const issuesRepoInput = getInput('issues_repo') || process.env.GITHUB_REPOSITORY;
-  const vexRepoDir = getInput('vex_repo_dir') || '';
-  const minSeverity = getInput('min_severity') || 'HIGH';
-
   const [repoOwner, repoName] = (process.env.GITHUB_REPOSITORY ?? '').split('/');
-  const [vexOwner, vexRepo] = vexRepoInput.split('/');
-  const [issuesOwner, issuesRepo] = issuesRepoInput.split('/');
 
-  let packageName = getInput('package_name');
-  if (!packageName) {
-    const workspace = process.env.GITHUB_WORKSPACE ?? '/github/workspace';
-    const pkgJson = JSON.parse(readFileSync(`${workspace}/package.json`, 'utf-8'));
-    packageName = pkgJson.name;
-  }
+  const vexRepoInput = getInput('vex_repo') || process.env.GITHUB_REPOSITORY;
+  const vexRepoDir = getInput('vex_repo_dir');
+  const minSeverity = getInput('min_severity') || 'HIGH';
+  const disableIssues = getInput('disable_issues') === 'true' || !!process.env.DISABLE_ISSUES;
+
+  const [vexOwner, vexRepo] = vexRepoInput.split('/');
+
+  const packageName = getInput('package_name') || repoName;
 
   console.log(`Package: ${packageName}, repo: ${repoOwner}/${repoName}`);
 
@@ -278,8 +273,11 @@ const run = async () => {
   vexDoc.incrementVersion();
 
   // DEBUG: write to tmp instead of committing to vex_repo
-  writeFileSync('/tmp/vex-output.json', JSON.stringify(vexDoc.toJson(), null, 2));
-  console.log('VEX written to /tmp/vex-output.json');
+  if (process.env.DEBUG) {
+    writeFileSync('/tmp/vex-output.json', JSON.stringify(vexDoc.toJson(), null, 2));
+    console.log('VEX written to /tmp/vex-output.json');
+    return;
+  }
 
   const commitMsg = currentDoc
     ? `chore: update VEX for ${packageName}@${latestTag.name}`
@@ -297,9 +295,11 @@ const run = async () => {
   console.log(`VEX written: ${currentVexPath}`);
 
   // Manage issues
-  await manageIssues(ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
-    issuesOwner, issuesRepo, fixedInBranchLabel, currentVexPath, currentProductId, previousProductId, minSeverity
-  });
+  if (!disableIssues) {
+    await manageIssues(ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
+      issuesOwner: repoOwner, issuesRepo: repoName, fixedInBranchLabel, currentVexPath, currentProductId, previousProductId, minSeverity
+    });
+  }
 
   console.log('Done.');
 };

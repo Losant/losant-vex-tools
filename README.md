@@ -43,18 +43,28 @@ jobs:
       - uses: Losant/losant-vex-tools/create-vex@main
         with:
           vex_repo: Losant/losant-vex
-          github_token: ${{ secrets.VEX_GITHUB_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VEX_GITHUB_TOKEN: ${{ secrets.VEX_GITHUB_TOKEN }}
 ```
 
 ### Inputs
 
 | Input | Required | Default | Description |
 |---|---|---|---|
-| `vex_repo` | yes | — | `owner/repo` where CSAF VEX files are stored. The token must have `contents:write` on this repo. |
-| `github_token` | yes | — | Token with `contents:write` on `vex_repo` and `issues:write` on the calling repository. |
-| `vex_repo_dir` | no | `packages` | Directory prefix within `vex_repo` for CSAF files. Files are written at `<vex_repo_dir>/<package-name>/<tag>.csaf.json`. |
-| `package_name` | no | from `package.json` | npm package name. If omitted, read from `package.json` in the workspace (requires `actions/checkout`). |
+| `vex_repo` | no | `GITHUB_REPOSITORY` | `owner/repo` where CSAF VEX files are stored. Defaults to the calling repository. |
+| `vex_repo_dir` | no | empty | Directory prefix within `vex_repo` for CSAF files. When omitted, files are written at `<package-name>/<tag>.csaf.json`. When set, files are written at `<vex_repo_dir>/<package-name>/<tag>.csaf.json`. |
+| `package_name` | no | repository name | Package or product name used in the CSAF file and VEX path. |
 | `min_severity` | no | `HIGH` | Minimum severity to open a `vex-pending` issue: `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`. All severities are still recorded in the CSAF file regardless of this threshold. |
+| `disable_issues` | no | `false` | Set to `true` to skip all issue creation and updates entirely. |
+
+### Environment variables
+
+| Variable | Description |
+|---|---|
+| `GITHUB_TOKEN` | Token with read access to the calling repository and `issues:write` on the calling repository. |
+| `VEX_GITHUB_TOKEN` | Token with `contents:write` on `vex_repo`. Falls back to `GITHUB_TOKEN` if not set. |
+| `DISABLE_ISSUES` | Set to any non-empty value to disable all issue creation and updates (same effect as `disable_issues: true`). |
 
 ### How it works
 
@@ -74,9 +84,15 @@ jobs:
 
 ```
 <vex_repo>/
+  <package-name>/
+    v1.0.0.csaf.json   ← one file per released tag
+    v1.1.0.csaf.json
+
+# with vex_repo_dir set:
+<vex_repo>/
   <vex_repo_dir>/
     <package-name>/
-      v1.0.0.csaf.json   ← one file per released tag
+      v1.0.0.csaf.json
       v1.1.0.csaf.json
 ```
 
