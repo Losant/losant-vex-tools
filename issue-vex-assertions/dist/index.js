@@ -35686,10 +35686,24 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
   };
 
   const getRepoDetails = async (repoOwner, repoName) => {
-    const [{ data: tags }, { data: repoData }] = await Promise.all([
-      octokit.rest.repos.listTags({ owner: repoOwner, repo: repoName, per_page: 2 }),
+    // Fetch up to 100 most-recently-created tags (GitHub API maximum per page).
+    // Tags are filtered to semver-shaped names and sorted descending so that
+    // non-semver tags (e.g. docker-preview, build-1234) are ignored.
+    // Limitation: if more than 100 non-semver tags were created after the latest
+    // release tag, the latest release tag would not appear in this set.
+    const [{ data: rawTags }, { data: repoData }] = await Promise.all([
+      octokit.rest.repos.listTags({ owner: repoOwner, repo: repoName, per_page: 100 }),
       octokit.rest.repos.get({ owner: repoOwner, repo: repoName })
     ]);
+    const semverRe = /^v?\d+\.\d+\.\d+/;
+    const tags = rawTags
+      .filter((t) => semverRe.test(t.name))
+      .sort((a, b) => {
+        const toNum = (s) => s.replace(/^v/, '').split('.').map(Number);
+        const [aMaj, aMin, aPat] = toNum(a.name);
+        const [bMaj, bMin, bPat] = toNum(b.name);
+        return bMaj - aMaj || bMin - aMin || bPat - aPat;
+      });
     return { tags, repoData };
   };
 

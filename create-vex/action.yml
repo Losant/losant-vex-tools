@@ -1,5 +1,5 @@
 name: Create VEX
-description: 'Scan the latest git tag with Trivy and create or update a CSAF 2.0 VEX file. Opens GitHub Issues for new CVEs requiring human triage.'
+description: 'Scan the latest git tag with Trivy and create or update a CSAF 2.0 VEX file. Opens GitHub Issues for new CVEs requiring human triage. Supports public repositories only.'
 inputs:
   vex_repo:
     required: false
@@ -19,8 +19,12 @@ inputs:
     default: 'HIGH'
   disable_issues:
     required: false
-    description: 'Disable the creation or updating of all issues'
+    description: 'Set to "true" to disable the creation or updating of all issues'
     default: false
+
+# Optional environment variables:
+#   DISABLE_ISSUES - if set to any value (including "false"), issue creation is disabled.
+#                    To keep issues enabled, do not set this variable at all.
 
 # Required environment variables (set in your workflow's env or step env):
 #   GITHUB_TOKEN      - token with read access to the current repo and issues:write on the current repo

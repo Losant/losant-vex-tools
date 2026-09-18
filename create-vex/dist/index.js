@@ -35522,10 +35522,24 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
   };
 
   const getRepoDetails = async (repoOwner, repoName) => {
-    const [{ data: tags }, { data: repoData }] = await Promise.all([
-      octokit.rest.repos.listTags({ owner: repoOwner, repo: repoName, per_page: 2 }),
+    // Fetch up to 100 most-recently-created tags (GitHub API maximum per page).
+    // Tags are filtered to semver-shaped names and sorted descending so that
+    // non-semver tags (e.g. docker-preview, build-1234) are ignored.
+    // Limitation: if more than 100 non-semver tags were created after the latest
+    // release tag, the latest release tag would not appear in this set.
+    const [{ data: rawTags }, { data: repoData }] = await Promise.all([
+      octokit.rest.repos.listTags({ owner: repoOwner, repo: repoName, per_page: 100 }),
       octokit.rest.repos.get({ owner: repoOwner, repo: repoName })
     ]);
+    const semverRe = /^v?\d+\.\d+\.\d+/;
+    const tags = rawTags
+      .filter((t) => semverRe.test(t.name))
+      .sort((a, b) => {
+        const toNum = (s) => s.replace(/^v/, '').split('.').map(Number);
+        const [aMaj, aMin, aPat] = toNum(a.name);
+        const [bMaj, bMin, bPat] = toNum(b.name);
+        return bMaj - aMaj || bMin - aMin || bPat - aPat;
+      });
     return { tags, repoData };
   };
 
@@ -35547,21 +35561,7 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
   };
 };
 
-;// CONCATENATED MODULE: ./src/process-handlers.js
-process.on('unhandledRejection', (err) => { console.error('Unhandled rejection:', err); process.exit(1); });
-process.on('uncaughtException', (err) => { console.error('Uncaught exception:', err); process.exit(1); });
-
-;// CONCATENATED MODULE: ./create-vex/index.js
-
-
-
-
-
-
-
-
-const getInput = (name) => process.env[`INPUT_${name.toUpperCase().replace(/-/g, '_')}`]?.trim() ?? '';
-
+;// CONCATENATED MODULE: ./create-vex/trivy.js
 const SEVERITY_ORDER = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'UNKNOWN'];
 
 const meetsMinSeverity = (severity, minSeverity) => {
@@ -35612,34 +35612,15 @@ const parseTrivyResults = (trivyOutput) => {
   return cveMap;
 };
 
-const trivyScan = (args, env) => {
-  (0,external_node_child_process_namespaceObject.execFileSync)('trivy', [...args, '--format', 'json', '--scanners', 'vuln', '--no-progress', '--quiet'], { stdio: ['ignore', 'ignore', 'inherit'], env });
-};
-
-const joinVexPath = (...parts) => external_node_path_namespaceObject.posix.join(...parts).replace(/^\//, '');
-
-const detectPurlType = () => {
-  const ws = process.env.GITHUB_WORKSPACE ?? '.';
-  if ((0,external_node_fs_namespaceObject.existsSync)(`${ws}/package.json`)) { return 'npm'; }
-  if ((0,external_node_fs_namespaceObject.existsSync)(`${ws}/pyproject.toml`) || (0,external_node_fs_namespaceObject.existsSync)(`${ws}/setup.py`)) { return 'pypi'; }
-  if ((0,external_node_fs_namespaceObject.existsSync)(`${ws}/Gemfile.lock`) || (0,external_node_fs_namespaceObject.existsSync)(`${ws}/Gemfile`)) { return 'gem'; }
-  return null;
-};
-
-const buildPurl = (type, name, version) => `pkg:${type.toLowerCase()}/${name}@${version}`;
-
 const updateVexDocWithTrivyFindings = (vexDoc, trivyResults, previousStatusMap, currentProductId) => {
-  // Apply carry-forward and update statuses
   for (const [cveId, trivyVuln] of trivyResults) {
     const existingStatus = vexDoc.getCveProductStatus(cveId, currentProductId);
 
     if (existingStatus !== null) {
-      // already added to vex file - this action should not try to update an existing VEX status - that's issue-vex-assertions job
       previousStatusMap.delete(cveId);
       continue;
     }
 
-    // New CVE for this product version — carry forward from previous if possible
     const prevSnapshot = previousStatusMap.get(cveId);
     let newStatus = 'under_investigation';
     const vulnerabilityInfo = {};
@@ -35672,8 +35653,40 @@ const updateVexDocWithTrivyFindings = (vexDoc, trivyResults, previousStatusMap, 
   }
 };
 
+;// CONCATENATED MODULE: ./src/process-handlers.js
+process.on('unhandledRejection', (err) => { console.error('Unhandled rejection:', err); process.exit(1); });
+process.on('uncaughtException', (err) => { console.error('Uncaught exception:', err); process.exit(1); });
+
+;// CONCATENATED MODULE: ./create-vex/index.js
+
+
+
+
+
+
+
+
+
+const getInput = (name) => process.env[`INPUT_${name.toUpperCase().replace(/-/g, '_')}`]?.trim() ?? '';
+
+const trivyScan = (args, env) => {
+  (0,external_node_child_process_namespaceObject.execFileSync)('trivy', [...args, '--format', 'json', '--scanners', 'vuln', '--no-progress', '--quiet'], { stdio: ['ignore', 'ignore', 'inherit'], env });
+};
+
+const joinVexPath = (...parts) => external_node_path_namespaceObject.posix.join(...parts).replace(/^\//, '');
+
+const detectPurlType = () => {
+  const ws = process.env.GITHUB_WORKSPACE ?? '.';
+  if ((0,external_node_fs_namespaceObject.existsSync)(`${ws}/package.json`)) { return 'npm'; }
+  if ((0,external_node_fs_namespaceObject.existsSync)(`${ws}/pyproject.toml`) || (0,external_node_fs_namespaceObject.existsSync)(`${ws}/setup.py`)) { return 'pypi'; }
+  if ((0,external_node_fs_namespaceObject.existsSync)(`${ws}/Gemfile.lock`) || (0,external_node_fs_namespaceObject.existsSync)(`${ws}/Gemfile`)) { return 'gem'; }
+  return null;
+};
+
+const buildPurl = (type, name, version) => `pkg:${type.toLowerCase()}/${name}@${version}`;
+
 const manageIssues = async (ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
-  issuesOwner, issuesRepo, fixedInBranchLabel, currentVexPath, oldVexPath, currentProductId, previousProductId, minSeverity
+  issuesOwner, issuesRepo, fixedInBranchLabel, currentVexPath, oldVexPath, currentProductId, defaultBranch, minSeverity
 }) => {
   await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-pending' });
   await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-reflected' });
@@ -35723,14 +35736,14 @@ const manageIssues = async (ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
           vexPath: currentVexPath,
           oldVexPath,
           productIds: [],
-          fixedProductIds: [previousProductId ?? currentProductId]
+          fixedProductIds: [currentProductId]
         });
       }
     }
   });
 
   // Check if CVEs are fixed in the default branch (HEAD)
-  trivyScan(['repo', repoUrl, '--output', '/tmp/trivy-head.json'], trivyEnv);
+  trivyScan(['repo', '--branch', defaultBranch, repoUrl, '--output', '/tmp/trivy-head.json'], trivyEnv);
   const trivyHeadOutput = JSON.parse((0,external_node_fs_namespaceObject.readFileSync)('/tmp/trivy-head.json', 'utf-8'));
   const headCveIds = new Set([...parseTrivyResults(trivyHeadOutput).keys()]);
 
@@ -35738,6 +35751,10 @@ const manageIssues = async (ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
   const remainingOpenIssues = await ghRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
 
   await (0,src.forEachSerialP)([...remainingOpenIssues.entries()], async ([cveId, issue]) => {
+    const issuePaths = Object.keys(parseIssueMetadata(issue)?.paths ?? {});
+    const isRelevant = issuePaths.includes(currentVexPath) || (oldVexPath && issuePaths.includes(oldVexPath));
+    if (!isRelevant) { return; }
+
     const isFixedInHead = !headCveIds.has(cveId);
     const hasLabel = issue.labels?.some((l) => l.name === fixedInBranchLabel);
 
@@ -35755,6 +35772,7 @@ const run = async () => {
   const vexRepoInput = getInput('vex_repo') || process.env.GITHUB_REPOSITORY;
   const vexRepoDir = getInput('vex_repo_dir');
   const minSeverity = getInput('min_severity') || 'HIGH';
+  // DISABLE_ISSUES: presence of the env var (any value, including "false") disables issues.
   const disableIssues = getInput('disable_issues') === 'true' || !!process.env.DISABLE_ISSUES;
 
   const [vexOwner, vexRepo] = vexRepoInput.split('/');
@@ -35808,6 +35826,7 @@ const run = async () => {
   }
 
   // Trivy scan the tagged version, suppressing already-assessed CVEs using the current VEX if it exists
+  // GITHUB_TOKEN is intentionally excluded — this action only supports public repositories.
   const trivyEnv = { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR };
   const repoUrl = `https://github.com/${repoOwner}/${repoName}`;
   const vexArgs = currentDoc ? ['--vex', '/tmp/current-vex.json'] : [];
@@ -35859,7 +35878,7 @@ const run = async () => {
   // Manage issues
   if (!disableIssues) {
     await manageIssues(ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
-      issuesOwner: repoOwner, issuesRepo: repoName, fixedInBranchLabel, currentVexPath, oldVexPath: prevVexPath, currentProductId, previousProductId, minSeverity
+      issuesOwner: repoOwner, issuesRepo: repoName, fixedInBranchLabel, currentVexPath, oldVexPath: prevVexPath, currentProductId, defaultBranch: repoData.default_branch, minSeverity
     });
   }
 
