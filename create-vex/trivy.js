@@ -36,12 +36,17 @@ export const parseTrivyResults = (trivyOutput) => {
         packages: [],
         referenceUrl: vuln.References?.find((r) => r.includes('nvd.nist.gov')) ?? vuln.References?.[0] ?? vuln.PrimaryURL ?? null
       };
-      existing.packages.push({
-        name: vuln.PkgName,
-        affected: vuln.PkgVersion,
-        fixed: vuln.FixedVersion || null,
-        type: result.Type
-      });
+      const isDuplicate = existing.packages.some(
+        (p) => p.name === vuln.PkgName && p.affected === vuln.PkgVersion && p.type === result.Type
+      );
+      if (!isDuplicate) {
+        existing.packages.push({
+          name: vuln.PkgName,
+          affected: vuln.PkgVersion,
+          fixed: vuln.FixedVersion || null,
+          type: result.Type
+        });
+      }
       cveMap.set(cveId, existing);
     }
   }

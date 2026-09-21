@@ -26,6 +26,8 @@ Detects the latest git tag of the calling repository, scans it with [Trivy](http
 
 Designed to run on a schedule so newly disclosed CVEs are caught even for already-released tags.
 
+> **Note:** `create-vex` currently supports **public repositories only**. Trivy clones the repository without authentication, so private repositories will result in a clone failure.
+
 ### Usage
 
 ```yaml

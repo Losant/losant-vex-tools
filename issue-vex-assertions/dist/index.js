@@ -35695,7 +35695,7 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
       octokit.rest.repos.listTags({ owner: repoOwner, repo: repoName, per_page: 100 }),
       octokit.rest.repos.get({ owner: repoOwner, repo: repoName })
     ]);
-    const semverRe = /^v?\d+\.\d+\.\d+/;
+    const semverRe = /^v?\d+\.\d+\.\d+$/;
     const tags = rawTags
       .filter((t) => semverRe.test(t.name))
       .sort((a, b) => {
