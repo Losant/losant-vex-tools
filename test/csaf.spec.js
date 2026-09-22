@@ -154,6 +154,13 @@ describe('createVexDocument', () => {
       doc.toJson().product_tree.branches[0].name.should.equal('repo/api');
     });
 
+    it('omits product_identification_helper when purl is not provided', () => {
+      const doc = makeDoc();
+      doc.upsertProduct({ name: 'repo/api', productId: 'repo/api:v1', productName: 'repo/api:v1' });
+      const branch = doc.toJson().product_tree.branches[0];
+      branch.product.should.not.have.property('product_identification_helper');
+    });
+
     it('overwrites an existing product with the same productId', () => {
       const doc = makeDoc();
       doc.upsertProduct({ name: 'repo/api', productId: 'repo/api:v1', productName: 'repo/api:v1', purl: 'aaa' });
@@ -372,6 +379,87 @@ describe('createVexDocument', () => {
         doc.updateVulnerabilityStatus('CVE-2024-1111', 'prod:v1', 'known_not_affected', { justification: 'not present' });
         doc.toJson().vulnerabilities[0].should.not.have.property('remediations');
       });
+    });
+  });
+
+  describe('getCveProductSnapshot', () => {
+    it('returns null for an unknown CVE', () => {
+      const doc = makeDoc();
+      (doc.getCveProductSnapshot('CVE-2024-9999', 'prod:v1') === null).should.be.true();
+    });
+
+    it('returns all nulls for a product with no threats, flags, or remediations', () => {
+      const doc = makeDoc();
+      doc.updateVulnerabilityStatus('CVE-2024-1111', 'prod:v1', 'under_investigation', { justification: 'url' });
+      const snap = doc.getCveProductSnapshot('CVE-2024-1111', 'prod:v1');
+      snap.should.deepEqual({ justification: null, label: null, remediationCategory: null, remediationDetails: null });
+    });
+
+    it('returns justification from threats for known_not_affected', () => {
+      const doc = makeDoc();
+      doc.updateVulnerabilityStatus('CVE-2024-1111', 'prod:v1', 'known_not_affected', { justification: 'not reachable', label: 'component_not_present' });
+      const snap = doc.getCveProductSnapshot('CVE-2024-1111', 'prod:v1');
+      snap.justification.should.equal('not reachable');
+    });
+
+    it('returns label from flags for known_not_affected', () => {
+      const doc = makeDoc();
+      doc.updateVulnerabilityStatus('CVE-2024-1111', 'prod:v1', 'known_not_affected', { justification: 'not reachable', label: 'component_not_present' });
+      const snap = doc.getCveProductSnapshot('CVE-2024-1111', 'prod:v1');
+      snap.label.should.equal('component_not_present');
+    });
+
+    it('returns remediationCategory and remediationDetails from remediations for fixed', () => {
+      const doc = makeDoc();
+      doc.updateVulnerabilityStatus('CVE-2024-1111', 'prod:v1', 'fixed', { remediationCategory: 'vendor_fix', remediationDetails: 'upgrade to v2' });
+      const snap = doc.getCveProductSnapshot('CVE-2024-1111', 'prod:v1');
+      snap.remediationCategory.should.equal('vendor_fix');
+      snap.remediationDetails.should.equal('upgrade to v2');
+    });
+
+    it('returns remediationCategory and remediationDetails for known_affected', () => {
+      const doc = makeDoc();
+      doc.updateVulnerabilityStatus('CVE-2024-1111', 'prod:v1', 'known_affected', { justification: 'exploitable', remediationCategory: 'workaround', remediationDetails: 'disable the feature' });
+      const snap = doc.getCveProductSnapshot('CVE-2024-1111', 'prod:v1');
+      snap.justification.should.equal('exploitable');
+      snap.remediationCategory.should.equal('workaround');
+      snap.remediationDetails.should.equal('disable the feature');
+    });
+
+    it('returns null fields for another product on the same CVE', () => {
+      const doc = makeDoc();
+      doc.updateVulnerabilityStatus('CVE-2024-1111', 'prod:v1', 'known_not_affected', { justification: 'not reachable', label: 'component_not_present' });
+      doc.updateVulnerabilityStatus('CVE-2024-1111', 'prod:v2', 'under_investigation', { justification: 'url' });
+      const snap = doc.getCveProductSnapshot('CVE-2024-1111', 'prod:v2');
+      snap.should.deepEqual({ justification: null, label: null, remediationCategory: null, remediationDetails: null });
+    });
+
+    it('works correctly after hydrating from an existing document', () => {
+      const existing = {
+        document: {
+          category: 'csaf_vex',
+          csaf_version: '2.0',
+          distribution: { tlp: { label: 'WHITE' } },
+          publisher: {},
+          title: 'T',
+          tracking: {
+            id: 'x', status: 'final', version: '1', initial_release_date: '2024-01-01T00:00:00.000Z', current_release_date: '2024-01-01T00:00:00.000Z', revision_history: []
+          }
+        },
+        product_tree: { branches: [] },
+        vulnerabilities: [{
+          cve: 'CVE-2024-5678',
+          product_status: { known_not_affected: ['prod:v1'] },
+          threats: [{ category: 'impact', details: 'not reachable', product_ids: ['prod:v1'] }],
+          flags: [{ label: 'vulnerable_code_not_in_execute_path', product_ids: ['prod:v1'] }]
+        }]
+      };
+      const doc = createVexDocument(existing);
+      const snap = doc.getCveProductSnapshot('CVE-2024-5678', 'prod:v1');
+      snap.justification.should.equal('not reachable');
+      snap.label.should.equal('vulnerable_code_not_in_execute_path');
+      (snap.remediationCategory === null).should.be.true();
+      (snap.remediationDetails === null).should.be.true();
     });
   });
 

@@ -27,7 +27,7 @@
   },
   "scripts": {
     "setup": "husky",
-    "build:action": "ncc build issue-vex-assertions/index.js -o issue-vex-assertions/dist --license licenses.txt",
+    "build:actions": "bash scripts/build-actions.sh",
     "test": "mocha 'test/**/*.spec.js'",
     "lint": "eslint .",
     "lint:changed": "lint-staged"

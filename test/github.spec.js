@@ -403,3 +403,36 @@ describe('buildVexIssueBody', () => {
     meta.packages[0].type.should.equal('NPM');
   });
 });
+
+describe('getRepoDetails tag filtering and sorting', () => {
+  const makeRepo = (rawTags) => createGithubVexRepo(null, {
+    octokit: {
+      rest: {
+        repos: {
+          listTags: async () => ({ data: rawTags }),
+          get: async () => ({ data: { default_branch: 'main' } })
+        }
+      }
+    }
+  });
+
+  const tag = (name) => ({ name, commit: { sha: 'abc' } });
+
+  it('sorts tags descending by semver', async () => {
+    const repo = makeRepo([tag('v1.3.0'), tag('v2.0.0'), tag('v1.10.0')]);
+    const { tags } = await repo.getRepoDetails('owner', 'repo');
+    tags.map((t) => t.name).should.deepEqual(['v2.0.0', 'v1.10.0', 'v1.3.0']);
+  });
+
+  it('filters out non-semver tags', async () => {
+    const repo = makeRepo([tag('v1.0.0'), tag('docker-preview'), tag('build-1234')]);
+    const { tags } = await repo.getRepoDetails('owner', 'repo');
+    tags.map((t) => t.name).should.deepEqual(['v1.0.0']);
+  });
+
+  it('filters out pre-release tags', async () => {
+    const repo = makeRepo([tag('v1.4.0'), tag('v1.4.0-rc1'), tag('v1.4.0-beta')]);
+    const { tags } = await repo.getRepoDetails('owner', 'repo');
+    tags.map((t) => t.name).should.deepEqual(['v1.4.0']);
+  });
+});

@@ -88,15 +88,9 @@ export const createVexDocument = (docOrOptions, { publisher } = {}) => {
   };
 
   const upsertProduct = ({ name, productId, productName, purl }) => {
-    products.set(productId, {
-      category: 'product_version',
-      name,
-      product: {
-        name: productName ?? name,
-        product_id: productId,
-        product_identification_helper: { purl }
-      }
-    });
+    const product = { name: productName ?? name, product_id: productId };
+    if (purl) { product.product_identification_helper = { purl }; }
+    products.set(productId, { category: 'product_version', name, product });
   };
 
   const updateVulnerabilityStatus = (cveId, productId, status, { justification, label, remediationCategory, remediationDetails } = {}) => {
@@ -156,12 +150,32 @@ export const createVexDocument = (docOrOptions, { publisher } = {}) => {
 
   const getProducts = () => [...products.values()];
 
+  const getCveProductSnapshot = (cveId, productId) => {
+    const vuln = vulnerabilities.get(cveId);
+    if (!vuln) { return null; }
+    let justification = null;
+    for (const [, entry] of vuln.threats) {
+      if (entry.ids.has(productId)) { justification = entry.details; break; }
+    }
+    let label = null;
+    for (const [lbl, ids] of vuln.flags) {
+      if (ids.has(productId)) { label = lbl; break; }
+    }
+    let remediationCategory = null;
+    let remediationDetails = null;
+    for (const [, rem] of vuln.remediations) {
+      if (rem.ids.has(productId)) { remediationCategory = rem.category; remediationDetails = rem.details; break; }
+    }
+    return { justification, label, remediationCategory, remediationDetails };
+  };
+
   return {
     toJson,
     upsertProduct,
     updateVulnerabilityStatus,
     incrementVersion,
     getProducts,
-    getCveProductStatus
+    getCveProductStatus,
+    getCveProductSnapshot
   };
 };

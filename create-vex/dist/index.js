@@ -31069,216 +31069,69 @@ function wrappy (fn, cb) {
 }
 
 
-/***/ }),
+/***/ })
 
-/***/ 35317:
-/***/ ((module) => {
+/******/ });
+/************************************************************************/
+/******/ // The module cache
+/******/ var __webpack_module_cache__ = {};
+/******/ 
+/******/ // The require function
+/******/ function __nccwpck_require__(moduleId) {
+/******/ 	// Check if module is in cache
+/******/ 	var cachedModule = __webpack_module_cache__[moduleId];
+/******/ 	if (cachedModule !== undefined) {
+/******/ 		return cachedModule.exports;
+/******/ 	}
+/******/ 	// Create a new module (and put it into the cache)
+/******/ 	var module = __webpack_module_cache__[moduleId] = {
+/******/ 		id: moduleId,
+/******/ 		loaded: false,
+/******/ 		exports: {}
+/******/ 	};
+/******/ 
+/******/ 	// Execute the module function
+/******/ 	var threw = true;
+/******/ 	try {
+/******/ 		__webpack_modules__[moduleId].call(module.exports, module, module.exports, __nccwpck_require__);
+/******/ 		threw = false;
+/******/ 	} finally {
+/******/ 		if(threw) delete __webpack_module_cache__[moduleId];
+/******/ 	}
+/******/ 
+/******/ 	// Flag the module as loaded
+/******/ 	module.loaded = true;
+/******/ 
+/******/ 	// Return the exports of the module
+/******/ 	return module.exports;
+/******/ }
+/******/ 
+/************************************************************************/
+/******/ /* webpack/runtime/node module decorator */
+/******/ (() => {
+/******/ 	__nccwpck_require__.nmd = (module) => {
+/******/ 		module.paths = [];
+/******/ 		if (!module.children) module.children = [];
+/******/ 		return module;
+/******/ 	};
+/******/ })();
+/******/ 
+/******/ /* webpack/runtime/compat */
+/******/ 
+/******/ if (typeof __nccwpck_require__ !== 'undefined') __nccwpck_require__.ab = new URL('.', import.meta.url).pathname.slice(import.meta.url.match(/^file:\/\/\/\w:/) ? 1 : 0, -1) + "/";
+/******/ 
+/************************************************************************/
+var __webpack_exports__ = {};
 
-module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("child_process");
-
-/***/ }),
-
-/***/ 39023:
-/***/ ((module) => {
-
-module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("util");
-
-/***/ }),
-
-/***/ 69332:
-/***/ ((__webpack_module__, __unused_webpack___webpack_exports__, __nccwpck_require__) => {
-
-__nccwpck_require__.a(__webpack_module__, async (__webpack_handle_async_dependencies__, __webpack_async_result__) => { try {
-/* harmony import */ var _src_process_handlers_js__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(27120);
-/* harmony import */ var child_process__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(35317);
-/* harmony import */ var util__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(39023);
-/* harmony import */ var omnibelt__WEBPACK_IMPORTED_MODULE_3__ = __nccwpck_require__(78957);
-/* harmony import */ var _src_csaf_js__WEBPACK_IMPORTED_MODULE_4__ = __nccwpck_require__(47280);
-/* harmony import */ var _src_github_js__WEBPACK_IMPORTED_MODULE_5__ = __nccwpck_require__(60728);
-
-
-
-
-
-
-
-const execFileAsync = (0,util__WEBPACK_IMPORTED_MODULE_2__.promisify)(child_process__WEBPACK_IMPORTED_MODULE_1__.execFile);
-
-const TIMEOUT_MINUTES  = Number(process.env.INPUT_TIMEOUT_MINUTES) || 360;
-const LOOKBACK_MS      = (TIMEOUT_MINUTES + 1) * 60 * 1000;
-const VEX_REPO         = process.env.INPUT_VEX_REPO;
-const GCP_PROJECT      = process.env.INPUT_GCP_PROJECT;
-const CLOUD_RUN_JOB    = process.env.INPUT_CLOUD_RUN_JOB;
-const CLOUD_RUN_REGION = process.env.INPUT_CLOUD_RUN_REGION;
-
-if (!VEX_REPO) { throw new Error('INPUT_VEX_REPO (vex_repo action input) is required'); }
-const [VEX_OWNER, VEX_REPO_NAME] = VEX_REPO.split('/');
-if (!VEX_OWNER || !VEX_REPO_NAME) { throw new Error('INPUT_VEX_REPO must be in "owner/repo" format'); }
-if (!process.env.GITHUB_REPOSITORY) { throw new Error('GITHUB_REPOSITORY env var is required'); }
-const [ISSUES_OWNER, ISSUES_REPO_NAME] = process.env.GITHUB_REPOSITORY.split('/');
-
-const issuesGhRepo = (0,_src_github_js__WEBPACK_IMPORTED_MODULE_5__/* .createGithubVexRepo */ .F6)(process.env.GITHUB_TOKEN);
-const vexGhRepo = (0,_src_github_js__WEBPACK_IMPORTED_MODULE_5__/* .createGithubVexRepo */ .F6)(process.env.VEX_GITHUB_TOKEN || process.env.GITHUB_TOKEN);
-
-const run = async () => {
-  const since = new Date(Date.now() - LOOKBACK_MS).toISOString();
-
-  const issues = await issuesGhRepo.getClosedVexPendingIssues({ owner: ISSUES_OWNER, repo: ISSUES_REPO_NAME, since });
-
-  if (issues.length === 0) {
-    console.log('No unprocessed closed VEX issues found.');
-    return;
-  }
-  console.log(`Found ${issues.length} issue(s) to process.`);
-
-  // Group assessments by VEX path so each file is written once per run.
-  // An issue can span multiple VEX paths (e.g., platform + edge); assessments
-  // are routed to the correct file based on which path owns each product ID.
-  const byVexPath = new Map();
-  // Track which vexPaths each issue number spans so we can confirm all writes succeeded.
-  const issueToVexPaths = new Map();
-
-  await (0,omnibelt__WEBPACK_IMPORTED_MODULE_3__.forEachSerialP)(async (issue) => {
-    const meta = (0,_src_github_js__WEBPACK_IMPORTED_MODULE_5__/* .parseIssueMetadata */ .aX)(issue);
-    if (!meta) { return; }
-    const allProductIds = Object.values(meta.paths).flat();
-    if (!allProductIds.length) { return; }
-    const { assessments, errors } = await issuesGhRepo.getAssessmentComments({
-      owner: ISSUES_OWNER, repo: ISSUES_REPO_NAME, issueNumber: issue.number, allProductIds
-    });
-
-    const missing = (0,omnibelt__WEBPACK_IMPORTED_MODULE_3__.difference)(allProductIds, assessments.map((a) => a.productId));
-    if (missing.length > 0) {
-      if (errors.length > 0) {
-        const { error, body } = errors[0];
-        await issuesGhRepo.reopenWithComment({
-          owner: ISSUES_OWNER,
-          repo: ISSUES_REPO_NAME,
-          issueNumber: issue.number,
-          body: `A VEX comment could not be processed due to a formatting error.\n\n**Error:** ${error}\n\n**Comment:**\n\`\`\`\n${body}\n\`\`\``
-        });
-      } else {
-        await issuesGhRepo.reopenWithComment({
-          owner: ISSUES_OWNER,
-          repo: ISSUES_REPO_NAME,
-          issueNumber: issue.number,
-          body: `This issue was closed before all affected products were assessed. Please add assessments for the following and close again:\n\n${missing.map((id) => `- \`${id}\``).join('\n')}`
-        });
-      }
-      return;
-    }
-    if (!assessments.length) { return; }
-
-    // Build a reverse map so each productId resolves to its vexPath.
-    const productToPath = {};
-    for (const [vp, pids] of Object.entries(meta.paths)) {
-      for (const pid of pids) { productToPath[pid] = vp; }
-    }
-
-    // Route each assessment to its owning vexPath.
-    for (const assessment of assessments) {
-      const vp = productToPath[assessment.productId];
-      if (!vp) { continue; }
-      if (!byVexPath.has(vp)) { byVexPath.set(vp, []); }
-      byVexPath.get(vp).push({ issue, cveId: meta.cveId, assessment });
-      if (!issueToVexPaths.has(issue.number)) { issueToVexPaths.set(issue.number, new Set()); }
-      issueToVexPaths.get(issue.number).add(vp);
-    }
-  }, issues);
-
-  if (byVexPath.size === 0) {
-    console.log('No assessable issues found.');
-    return;
-  }
-
-  // Write one VEX file per path; track which paths actually succeeded.
-  const successfulVexPaths = new Set();
-  await (0,omnibelt__WEBPACK_IMPORTED_MODULE_3__.forEachSerialP)(async (vexPath) => {
-    const entries = byVexPath.get(vexPath);
-    const existing = await vexGhRepo.readVexFile({ owner: VEX_OWNER, repo: VEX_REPO_NAME, path: vexPath });
-    if (!existing) {
-      console.warn(`VEX file not found: ${vexPath}, skipping.`);
-      return;
-    }
-
-    const { doc: rawDoc, sha } = existing;
-    const vexDoc = (0,_src_csaf_js__WEBPACK_IMPORTED_MODULE_4__/* .createVexDocument */ .B)(rawDoc);
-
-    // Collect unique (issue, cveId) pairs so we can build commit messages.
-    const issueCvePairs = new Map();
-    for (const { issue, cveId, assessment } of entries) {
-      const key = `${issue.number}:${cveId}`;
-      if (!issueCvePairs.has(key)) { issueCvePairs.set(key, { issue, cveId }); }
-      vexDoc.updateVulnerabilityStatus(cveId, assessment.productId, assessment.status, {
-        justification: assessment.justification,
-        label: assessment.label,
-        remediationCategory: assessment.remediationCategory,
-        remediationDetails: assessment.remediationDetails
-      });
-    }
-
-    vexDoc.incrementVersion();
-
-    const uniqueEntries = [...issueCvePairs.values()];
-    await vexGhRepo.writeVexFile({
-      owner: VEX_OWNER,
-      repo: VEX_REPO_NAME,
-      path: vexPath,
-      doc: vexDoc.toJson(),
-      sha,
-      message: `vex: assess updates for ${uniqueEntries.length} CVE(s) from ${uniqueEntries.map((e) => `#${e.issue.number}`).join(', ')}`
-    });
-    successfulVexPaths.add(vexPath);
-    console.log(`Updated ${vexPath}: ${uniqueEntries.length} CVE(s) assessed`);
-  }, [...byVexPath.keys()]);
-
-  // Only mark issues as reflected if every one of their vexPaths was successfully written.
-  const processedIssues = issues.filter((i) => {
-    const paths = issueToVexPaths.get(i.number);
-    return paths && [...paths].every((vp) => successfulVexPaths.has(vp));
-  });
-
-  if (!processedIssues.length) { return; }
-  await issuesGhRepo.ensureLabel({ owner: ISSUES_OWNER, repo: ISSUES_REPO_NAME, name: 'vex-reflected' });
-  await (0,omnibelt__WEBPACK_IMPORTED_MODULE_3__.forEachSerialP)(async (issue) => {
-    await issuesGhRepo.markIssueAsReflected({ owner: ISSUES_OWNER, repo: ISSUES_REPO_NAME, issue });
-    console.log(`  Labeled #${issue.number} as vex-reflected, removed vex-pending`);
-  }, processedIssues);
-
-  if (!CLOUD_RUN_JOB || !CLOUD_RUN_REGION || !GCP_PROJECT) {
-    return console.warn('CLOUD_RUN_JOB, CLOUD_RUN_REGION, or GCP_PROJECT not set, skipping Cloud Run Job trigger.');
-  }
-  const vexPathList = [...successfulVexPaths].join(',');
-  await execFileAsync('gcloud', [
-    'run', 'jobs', 'execute', CLOUD_RUN_JOB,
-    '--region', CLOUD_RUN_REGION,
-    `--update-env-vars=^:^LOAD_ONLY=true:VEX_PATH=${vexPathList}`,
-    '--project', GCP_PROJECT,
-    '--async'
-  ]);
-  console.log(`Triggered ${CLOUD_RUN_JOB} with LOAD_ONLY=true`);
-};
-
-try {
-  await run();
-  process.exit(0);
-} catch (err) {
-  console.error('VEX update failed:', err);
-  process.exit(1);
-}
-
-__webpack_async_result__();
-} catch(e) { __webpack_async_result__(e); } }, 1);
-
-/***/ }),
-
-/***/ 47280:
-/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __nccwpck_require__) => {
-
-/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
-/* harmony export */   B: () => (/* binding */ createVexDocument)
-/* harmony export */ });
-/* harmony import */ var omnibelt__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(78957);
+;// CONCATENATED MODULE: external "node:fs"
+const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
+;// CONCATENATED MODULE: external "node:child_process"
+const external_node_child_process_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
+;// CONCATENATED MODULE: external "node:path"
+const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
+// EXTERNAL MODULE: ./node_modules/.pnpm/omnibelt@4.1.0/node_modules/omnibelt/src/index.js
+var src = __nccwpck_require__(78957);
+;// CONCATENATED MODULE: ./src/csaf.js
 
 
 const DEFAULT_PUBLISHER = {
@@ -31297,7 +31150,7 @@ const createVexDocument = (docOrOptions, { publisher } = {}) => {
   if (docOrOptions?.document) {
     // Hydrate from existing CSAF document
     const existing = docOrOptions;
-    meta = (0,omnibelt__WEBPACK_IMPORTED_MODULE_0__.clone)(existing.document);
+    meta = (0,src.clone)(existing.document);
     for (const branch of existing.product_tree?.branches ?? []) {
       products.set(branch.product.product_id, branch);
     }
@@ -31460,21 +31313,6 @@ const createVexDocument = (docOrOptions, { publisher } = {}) => {
     getCveProductSnapshot
   };
 };
-
-
-/***/ }),
-
-/***/ 60728:
-/***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __nccwpck_require__) => {
-
-
-// EXPORTS
-__nccwpck_require__.d(__webpack_exports__, {
-  F6: () => (/* binding */ createGithubVexRepo),
-  aX: () => (/* binding */ parseIssueMetadata)
-});
-
-// UNUSED EXPORTS: buildVexIssueBody, formatCvssLine, parseVexComment, validateVexComment
 
 // EXTERNAL MODULE: ./node_modules/.pnpm/@octokit+rest@20.1.2/node_modules/@octokit/rest/dist-node/index.js
 var dist_node = __nccwpck_require__(13020);
@@ -35285,8 +35123,6 @@ function createAppAuth(options) {
 /* v8 ignore start - due to skipped tests, see https://github.com/octokit/auth-app.js/pull/580 -- @preserve */
 /* v8 ignore end -- @preserve */
 
-// EXTERNAL MODULE: ./node_modules/.pnpm/omnibelt@4.1.0/node_modules/omnibelt/src/index.js
-var src = __nccwpck_require__(78957);
 ;// CONCATENATED MODULE: ./src/github.js
 
 
@@ -35725,158 +35561,334 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
   };
 };
 
+;// CONCATENATED MODULE: ./create-vex/trivy.js
+const SEVERITY_ORDER = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'UNKNOWN'];
 
-/***/ }),
+const meetsMinSeverity = (severity, minSeverity) => {
+  const sevIdx = SEVERITY_ORDER.indexOf(severity?.toUpperCase() ?? 'UNKNOWN');
+  const minIdx = SEVERITY_ORDER.indexOf(minSeverity?.toUpperCase() ?? 'HIGH');
+  return sevIdx !== -1 && minIdx !== -1 && sevIdx <= minIdx;
+};
 
-/***/ 27120:
-/***/ (() => {
+const AV_MAP = { N: 'NETWORK', A: 'ADJACENT', L: 'LOCAL', P: 'PHYSICAL' };
+const AC_MAP = { L: 'LOW', H: 'HIGH' };
+const PR_MAP = { N: 'NONE', L: 'LOW', H: 'HIGH' };
+const UI_MAP = { N: 'NONE', R: 'REQUIRED' };
+const parseCvssVector = (cvssObj) => {
+  const v3 = cvssObj?.nvd?.V3Vector ?? cvssObj?.redhat?.V3Vector ?? null;
+  const score = cvssObj?.nvd?.V3Score ?? cvssObj?.redhat?.V3Score ?? null;
+  if (!v3 || score === null) { return null; }
+  const parts = Object.fromEntries(v3.split('/').slice(1).map((p) => p.split(':')));
+  return {
+    score,
+    attackVector: AV_MAP[parts.AV] ?? parts.AV,
+    attackComplexity: AC_MAP[parts.AC] ?? parts.AC,
+    privilegesRequired: PR_MAP[parts.PR] ?? parts.PR,
+    userInteraction: UI_MAP[parts.UI] ?? parts.UI
+  };
+};
 
+const parseTrivyResults = (trivyOutput) => {
+  const cveMap = new Map();
+  for (const result of trivyOutput.Results ?? []) {
+    for (const vuln of result.Vulnerabilities ?? []) {
+      const cveId = vuln.VulnerabilityID;
+      if (!cveId?.startsWith('CVE-')) { continue; }
+      const existing = cveMap.get(cveId) ?? {
+        severity: vuln.Severity ?? 'UNKNOWN',
+        cvss: parseCvssVector(vuln.CVSS),
+        packages: [],
+        referenceUrl: vuln.References?.find((r) => r.includes('nvd.nist.gov')) ?? vuln.References?.[0] ?? vuln.PrimaryURL ?? null
+      };
+      const isDuplicate = existing.packages.some(
+        (p) => p.name === vuln.PkgName && p.affected === vuln.PkgVersion && p.type === result.Type
+      );
+      if (!isDuplicate) {
+        existing.packages.push({
+          name: vuln.PkgName,
+          affected: vuln.PkgVersion,
+          fixed: vuln.FixedVersion || null,
+          type: result.Type
+        });
+      }
+      cveMap.set(cveId, existing);
+    }
+  }
+  return cveMap;
+};
+
+const updateVexDocWithTrivyFindings = (vexDoc, trivyResults, previousStatusMap, currentProductId) => {
+  for (const [cveId, trivyVuln] of trivyResults) {
+    const existingStatus = vexDoc.getCveProductStatus(cveId, currentProductId);
+
+    if (existingStatus !== null) {
+      previousStatusMap.delete(cveId);
+      continue;
+    }
+
+    const prevSnapshot = previousStatusMap.get(cveId);
+    let newStatus = 'under_investigation';
+    const vulnerabilityInfo = {};
+
+    if (prevSnapshot?.status === 'known_not_affected') {
+      newStatus = 'known_not_affected';
+      vulnerabilityInfo.justification = prevSnapshot.justification;
+      vulnerabilityInfo.label = prevSnapshot.label;
+    } else if (prevSnapshot?.status === 'known_affected') {
+      newStatus = 'known_affected';
+      vulnerabilityInfo.justification = prevSnapshot.justification;
+      vulnerabilityInfo.remediationCategory = prevSnapshot.remediationCategory;
+      vulnerabilityInfo.remediationDetails = prevSnapshot.remediationDetails;
+    } else if (!prevSnapshot?.status || prevSnapshot?.status === 'under_investigation') {
+      vulnerabilityInfo.justification = prevSnapshot?.justification || trivyVuln.referenceUrl || `https://nvd.nist.gov/vuln/detail/${cveId}`;
+    }
+
+    vexDoc.updateVulnerabilityStatus(cveId, currentProductId, newStatus, vulnerabilityInfo);
+    previousStatusMap.delete(cveId);
+  }
+
+  // CVEs from previous version no longer detected by Trivy → fixed in this version
+  for (const [cveId, prevSnapshot] of previousStatusMap) {
+    if (!['under_investigation', 'known_affected'].includes(prevSnapshot.status)) { continue; }
+
+    const existingStatus = vexDoc.getCveProductStatus(cveId, currentProductId);
+    if (existingStatus === null || existingStatus === 'under_investigation') {
+      vexDoc.updateVulnerabilityStatus(cveId, currentProductId, 'fixed', { remediationCategory: 'vendor_fix', remediationDetails: 'no longer reporting' });
+    }
+  }
+};
+
+;// CONCATENATED MODULE: ./src/process-handlers.js
 process.on('unhandledRejection', (err) => { console.error('Unhandled rejection:', err); process.exit(1); });
 process.on('uncaughtException', (err) => { console.error('Uncaught exception:', err); process.exit(1); });
 
+;// CONCATENATED MODULE: ./create-vex/index.js
 
-/***/ })
 
-/******/ });
-/************************************************************************/
-/******/ // The module cache
-/******/ var __webpack_module_cache__ = {};
-/******/ 
-/******/ // The require function
-/******/ function __nccwpck_require__(moduleId) {
-/******/ 	// Check if module is in cache
-/******/ 	var cachedModule = __webpack_module_cache__[moduleId];
-/******/ 	if (cachedModule !== undefined) {
-/******/ 		return cachedModule.exports;
-/******/ 	}
-/******/ 	// Create a new module (and put it into the cache)
-/******/ 	var module = __webpack_module_cache__[moduleId] = {
-/******/ 		id: moduleId,
-/******/ 		loaded: false,
-/******/ 		exports: {}
-/******/ 	};
-/******/ 
-/******/ 	// Execute the module function
-/******/ 	var threw = true;
-/******/ 	try {
-/******/ 		__webpack_modules__[moduleId].call(module.exports, module, module.exports, __nccwpck_require__);
-/******/ 		threw = false;
-/******/ 	} finally {
-/******/ 		if(threw) delete __webpack_module_cache__[moduleId];
-/******/ 	}
-/******/ 
-/******/ 	// Flag the module as loaded
-/******/ 	module.loaded = true;
-/******/ 
-/******/ 	// Return the exports of the module
-/******/ 	return module.exports;
-/******/ }
-/******/ 
-/************************************************************************/
-/******/ /* webpack/runtime/async module */
-/******/ (() => {
-/******/ 	var webpackQueues = typeof Symbol === "function" ? Symbol("webpack queues") : "__webpack_queues__";
-/******/ 	var webpackExports = typeof Symbol === "function" ? Symbol("webpack exports") : "__webpack_exports__";
-/******/ 	var webpackError = typeof Symbol === "function" ? Symbol("webpack error") : "__webpack_error__";
-/******/ 	var resolveQueue = (queue) => {
-/******/ 		if(queue && queue.d < 1) {
-/******/ 			queue.d = 1;
-/******/ 			queue.forEach((fn) => (fn.r--));
-/******/ 			queue.forEach((fn) => (fn.r-- ? fn.r++ : fn()));
-/******/ 		}
-/******/ 	}
-/******/ 	var wrapDeps = (deps) => (deps.map((dep) => {
-/******/ 		if(dep !== null && typeof dep === "object") {
-/******/ 			if(dep[webpackQueues]) return dep;
-/******/ 			if(dep.then) {
-/******/ 				var queue = [];
-/******/ 				queue.d = 0;
-/******/ 				dep.then((r) => {
-/******/ 					obj[webpackExports] = r;
-/******/ 					resolveQueue(queue);
-/******/ 				}, (e) => {
-/******/ 					obj[webpackError] = e;
-/******/ 					resolveQueue(queue);
-/******/ 				});
-/******/ 				var obj = {};
-/******/ 				obj[webpackQueues] = (fn) => (fn(queue));
-/******/ 				return obj;
-/******/ 			}
-/******/ 		}
-/******/ 		var ret = {};
-/******/ 		ret[webpackQueues] = x => {};
-/******/ 		ret[webpackExports] = dep;
-/******/ 		return ret;
-/******/ 	}));
-/******/ 	__nccwpck_require__.a = (module, body, hasAwait) => {
-/******/ 		var queue;
-/******/ 		hasAwait && ((queue = []).d = -1);
-/******/ 		var depQueues = new Set();
-/******/ 		var exports = module.exports;
-/******/ 		var currentDeps;
-/******/ 		var outerResolve;
-/******/ 		var reject;
-/******/ 		var promise = new Promise((resolve, rej) => {
-/******/ 			reject = rej;
-/******/ 			outerResolve = resolve;
-/******/ 		});
-/******/ 		promise[webpackExports] = exports;
-/******/ 		promise[webpackQueues] = (fn) => (queue && fn(queue), depQueues.forEach(fn), promise["catch"](x => {}));
-/******/ 		module.exports = promise;
-/******/ 		body((deps) => {
-/******/ 			currentDeps = wrapDeps(deps);
-/******/ 			var fn;
-/******/ 			var getResult = () => (currentDeps.map((d) => {
-/******/ 				if(d[webpackError]) throw d[webpackError];
-/******/ 				return d[webpackExports];
-/******/ 			}))
-/******/ 			var promise = new Promise((resolve) => {
-/******/ 				fn = () => (resolve(getResult));
-/******/ 				fn.r = 0;
-/******/ 				var fnQueue = (q) => (q !== queue && !depQueues.has(q) && (depQueues.add(q), q && !q.d && (fn.r++, q.push(fn))));
-/******/ 				currentDeps.map((dep) => (dep[webpackQueues](fnQueue)));
-/******/ 			});
-/******/ 			return fn.r ? promise : getResult();
-/******/ 		}, (err) => ((err ? reject(promise[webpackError] = err) : outerResolve(exports)), resolveQueue(queue)));
-/******/ 		queue && queue.d < 0 && (queue.d = 0);
-/******/ 	};
-/******/ })();
-/******/ 
-/******/ /* webpack/runtime/define property getters */
-/******/ (() => {
-/******/ 	// define getter functions for harmony exports
-/******/ 	__nccwpck_require__.d = (exports, definition) => {
-/******/ 		for(var key in definition) {
-/******/ 			if(__nccwpck_require__.o(definition, key) && !__nccwpck_require__.o(exports, key)) {
-/******/ 				Object.defineProperty(exports, key, { enumerable: true, get: definition[key] });
-/******/ 			}
-/******/ 		}
-/******/ 	};
-/******/ })();
-/******/ 
-/******/ /* webpack/runtime/hasOwnProperty shorthand */
-/******/ (() => {
-/******/ 	__nccwpck_require__.o = (obj, prop) => (Object.prototype.hasOwnProperty.call(obj, prop))
-/******/ })();
-/******/ 
-/******/ /* webpack/runtime/node module decorator */
-/******/ (() => {
-/******/ 	__nccwpck_require__.nmd = (module) => {
-/******/ 		module.paths = [];
-/******/ 		if (!module.children) module.children = [];
-/******/ 		return module;
-/******/ 	};
-/******/ })();
-/******/ 
-/******/ /* webpack/runtime/compat */
-/******/ 
-/******/ if (typeof __nccwpck_require__ !== 'undefined') __nccwpck_require__.ab = new URL('.', import.meta.url).pathname.slice(import.meta.url.match(/^file:\/\/\/\w:/) ? 1 : 0, -1) + "/";
-/******/ 
-/************************************************************************/
-/******/ 
-/******/ // startup
-/******/ // Load entry module and return exports
-/******/ // This entry module used 'module' so it can't be inlined
-/******/ var __webpack_exports__ = __nccwpck_require__(69332);
-/******/ __webpack_exports__ = await __webpack_exports__;
-/******/ 
+
+
+
+
+
+
+
+const getInput = (name) => process.env[`INPUT_${name.toUpperCase().replace(/-/g, '_')}`]?.trim() ?? '';
+
+const trivyScan = (args, env) => {
+  (0,external_node_child_process_namespaceObject.execFileSync)('trivy', [...args, '--format', 'json', '--scanners', 'vuln', '--no-progress', '--quiet'], { stdio: ['ignore', 'ignore', 'inherit'], env });
+};
+
+const joinVexPath = (...parts) => external_node_path_namespaceObject.posix.join(...parts).replace(/^\//, '');
+
+const detectPurlType = () => {
+  const ws = process.env.GITHUB_WORKSPACE ?? '.';
+  if ((0,external_node_fs_namespaceObject.existsSync)(`${ws}/package.json`)) { return 'npm'; }
+  if ((0,external_node_fs_namespaceObject.existsSync)(`${ws}/pyproject.toml`) || (0,external_node_fs_namespaceObject.existsSync)(`${ws}/setup.py`)) { return 'pypi'; }
+  if ((0,external_node_fs_namespaceObject.existsSync)(`${ws}/Gemfile.lock`) || (0,external_node_fs_namespaceObject.existsSync)(`${ws}/Gemfile`)) { return 'gem'; }
+  return null;
+};
+
+const buildPurl = (type, name, version) => `pkg:${type.toLowerCase()}/${name}@${version}`;
+
+const manageIssues = async (ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
+  issuesOwner, issuesRepo, fixedInBranchLabel, currentVexPath, oldVexPath, currentProductId, defaultBranch, minSeverity
+}) => {
+  await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-pending' });
+  await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-reflected' });
+  await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: fixedInBranchLabel, color: 'e4e669' });
+
+  const openIssues = await ghRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
+  const updatedDoc = vexDoc.toJson();
+
+  await (0,src.forEachSerialP)(updatedDoc.vulnerabilities, async (vuln) => {
+    const { cve: cveId, product_status: ps } = vuln;
+    const underInvestigation = ps?.under_investigation ?? [];
+    const fixed = ps?.fixed ?? [];
+
+    if (underInvestigation.includes(currentProductId)) {
+      const finding = trivyResults.get(cveId);
+      if (!finding || !meetsMinSeverity(finding.severity, minSeverity)) { return; }
+
+      const existingIssue = openIssues.get(cveId);
+      const issueArgs = {
+        owner: issuesOwner,
+        repo: issuesRepo,
+        cveId,
+        vexPath: currentVexPath,
+        oldVexPath,
+        productIds: [currentProductId],
+        severity: finding.severity,
+        referenceUrl: finding.referenceUrl,
+        packages: finding.packages,
+        cvss: finding.cvss
+      };
+
+      if (!existingIssue) {
+        await ghRepo.openVexIssue(issueArgs);
+      } else {
+        await ghRepo.updateVexIssue({ ...issueArgs, issue: existingIssue });
+      }
+    }
+
+    if (fixed.includes(currentProductId)) {
+      const existingIssue = openIssues.get(cveId);
+      if (existingIssue) {
+        await ghRepo.updateVexIssue({
+          owner: issuesOwner,
+          repo: issuesRepo,
+          issue: existingIssue,
+          cveId,
+          vexPath: currentVexPath,
+          oldVexPath,
+          productIds: [],
+          fixedProductIds: [currentProductId]
+        });
+      }
+    }
+  });
+
+  // Check if CVEs are fixed in the default branch (HEAD)
+  trivyScan(['repo', '--branch', defaultBranch, repoUrl, '--output', '/tmp/trivy-head.json'], trivyEnv);
+  const trivyHeadOutput = JSON.parse((0,external_node_fs_namespaceObject.readFileSync)('/tmp/trivy-head.json', 'utf-8'));
+  const headCveIds = new Set([...parseTrivyResults(trivyHeadOutput).keys()]);
+
+  // Re-fetch open issues since some may have been closed above
+  const remainingOpenIssues = await ghRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
+
+  await (0,src.forEachSerialP)([...remainingOpenIssues.entries()], async ([cveId, issue]) => {
+    const issuePaths = Object.keys(parseIssueMetadata(issue)?.paths ?? {});
+    const isRelevant = issuePaths.includes(currentVexPath) || (oldVexPath && issuePaths.includes(oldVexPath));
+    if (!isRelevant) { return; }
+
+    const isFixedInHead = !headCveIds.has(cveId);
+    const hasLabel = issue.labels?.some((l) => l.name === fixedInBranchLabel);
+
+    if (isFixedInHead && !hasLabel) {
+      await ghRepo.addLabels({ owner: issuesOwner, repo: issuesRepo, issueNumber: issue.number, labels: [fixedInBranchLabel] });
+    } else if (!isFixedInHead && hasLabel) {
+      await ghRepo.removeLabel({ owner: issuesOwner, repo: issuesRepo, issueNumber: issue.number, name: fixedInBranchLabel });
+    }
+  });
+};
+
+const run = async () => {
+  const [repoOwner, repoName] = (process.env.GITHUB_REPOSITORY ?? '').split('/');
+
+  const vexRepoInput = getInput('vex_repo') || process.env.GITHUB_REPOSITORY;
+  const vexRepoDir = getInput('vex_repo_dir');
+  const minSeverity = getInput('min_severity') || 'HIGH';
+  // DISABLE_ISSUES: presence of the env var (any value, including "false") disables issues.
+  const disableIssues = getInput('disable_issues') === 'true' || !!process.env.DISABLE_ISSUES;
+
+  const [vexOwner, vexRepo] = vexRepoInput.split('/');
+
+  const packageName = getInput('package_name') || repoName;
+  const purlType = getInput('purl_type') || detectPurlType();
+  if (!purlType) { throw new Error('Could not detect package type. Set the purl_type input (e.g. npm, pypi, gem, cargo, golang).'); }
+
+  console.log(`Package: ${packageName}, repo: ${repoOwner}/${repoName}`);
+
+  const ghRepo = createGithubVexRepo(process.env.GITHUB_TOKEN);
+  const vexGhRepo = createGithubVexRepo(process.env.VEX_GITHUB_TOKEN || process.env.GITHUB_TOKEN);
+
+  // Detect latest two tags and default branch in parallel
+  const { tags, repoData } = await ghRepo.getRepoDetails(repoOwner, repoName);
+  if (!tags.length) { throw new Error('No tags found in repository'); }
+  const latestTag = tags[0];
+  const previousTag = tags[1] ?? null;
+  const fixedInBranchLabel = `fixed-in-${repoData.default_branch}`;
+
+  console.log(`Latest tag: ${latestTag.name}${previousTag ? `, previous: ${previousTag.name}` : ''}, default branch: ${repoData.default_branch}`);
+  const currentVexPath = joinVexPath(vexRepoDir || '.', packageName, `${latestTag.name}.csaf.json`);
+  const prevVexPath = previousTag ? joinVexPath(vexRepoDir || '.', packageName, `${previousTag.name}.csaf.json`) : null;
+  const currentProductId = `${packageName}:${latestTag.name}`;
+  const previousProductId = previousTag ? `${packageName}:${previousTag.name}` : null;
+
+  // Read current tag's VEX (may exist from a prior scheduled run)
+  const currentVexResult = await vexGhRepo.readVexFile({ owner: vexOwner, repo: vexRepo, path: currentVexPath });
+  const currentDoc = currentVexResult?.doc ?? null;
+  const currentSha = currentVexResult?.sha ?? null;
+
+  const vexDoc = createVexDocument(currentDoc || { title: `${packageName} ${latestTag.name} VEX`, id: `${packageName}-${latestTag.name}` });
+
+  // Read previous tag's VEX for carry-forward
+  const prevVexResult = prevVexPath ? await vexGhRepo.readVexFile({ owner: vexOwner, repo: vexRepo, path: prevVexPath }) : null;
+  const prevDoc = prevVexResult?.doc ?? null;
+  const prevVexDoc = prevDoc ? createVexDocument(prevDoc) : null;
+
+  // Snapshot previous version's CVE statuses
+  const previousStatusMap = new Map();
+  if (prevVexDoc && prevDoc && previousProductId) {
+    for (const vuln of prevDoc.vulnerabilities ?? []) {
+      const status = prevVexDoc.getCveProductStatus(vuln.cve, previousProductId);
+      if (!status) { continue; }
+      const snapshot = prevVexDoc.getCveProductSnapshot(vuln.cve, previousProductId);
+      previousStatusMap.set(vuln.cve, {
+        status,
+        ...snapshot
+      });
+    }
+  }
+
+  // Trivy scan the tagged version, suppressing already-assessed CVEs using the current VEX if it exists
+  // GITHUB_TOKEN is intentionally excluded — this action only supports public repositories.
+  const trivyEnv = { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR };
+  const repoUrl = `https://github.com/${repoOwner}/${repoName}`;
+  const vexArgs = currentDoc ? ['--vex', '/tmp/current-vex.json'] : [];
+  if (currentDoc) {
+    (0,external_node_fs_namespaceObject.writeFileSync)('/tmp/current-vex.json', JSON.stringify(currentDoc));
+  }
+  trivyScan(['repo', '--tag', latestTag.name, repoUrl, ...vexArgs, '--output', '/tmp/trivy-tag.json'], trivyEnv);
+
+  const trivyTagOutput = JSON.parse((0,external_node_fs_namespaceObject.readFileSync)('/tmp/trivy-tag.json', 'utf-8'));
+  const trivyResults = parseTrivyResults(trivyTagOutput);
+
+  console.log(`Trivy found ${trivyResults.size} unique CVEs at ${latestTag.name}`);
+
+  // Update CSAF product
+  const semver = latestTag.name.replace(/^v/, '');
+  vexDoc.upsertProduct({
+    name: packageName,
+    productId: currentProductId,
+    productName: `${packageName} ${latestTag.name}`,
+    purl: buildPurl(purlType, packageName, semver)
+  });
+
+  updateVexDocWithTrivyFindings(vexDoc, trivyResults, previousStatusMap, currentProductId);
+
+  vexDoc.incrementVersion();
+
+  // DEBUG: write to tmp instead of committing to vex_repo
+  if (process.env.DEBUG) {
+    (0,external_node_fs_namespaceObject.writeFileSync)('/tmp/vex-output.json', JSON.stringify(vexDoc.toJson(), null, 2));
+    console.log('VEX written to /tmp/vex-output.json');
+    return;
+  }
+
+  const commitMsg = currentDoc
+    ? `chore: update VEX for ${packageName}@${latestTag.name}`
+    : `chore: create VEX for ${packageName}@${latestTag.name}`;
+
+  await vexGhRepo.writeVexFile({
+    owner: vexOwner,
+    repo: vexRepo,
+    path: currentVexPath,
+    doc: vexDoc.toJson(),
+    sha: currentSha,
+    message: commitMsg
+  });
+
+  console.log(`VEX written: ${currentVexPath}`);
+
+  // Manage issues
+  if (!disableIssues) {
+    await manageIssues(ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
+      issuesOwner: repoOwner, issuesRepo: repoName, fixedInBranchLabel, currentVexPath, oldVexPath: prevVexPath, currentProductId, defaultBranch: repoData.default_branch, minSeverity
+    });
+  }
+
+  console.log('Done.');
+};
+
+run();
+

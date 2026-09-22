@@ -2,6 +2,103 @@
 
 GitHub Actions and libraries for creating and triaging CSAF VEX documents as part of Losant's vulnerability management process.
 
+### Pipeline overview
+
+```
+[scheduled / manual]                     [issue closed by human]
+      │                                          │
+      ▼                                          ▼
+ create-vex                            issue-vex-assertions
+      │                                          │
+      │  Trivy scans latest tag                  │  Reads closed vex-pending issues
+      │  Writes CSAF VEX file                    │  Applies assessments to CSAF file
+      │  Opens vex-pending issues                │  Labels issues vex-reflected
+      │  Labels issues fixed-in-<branch>         │
+      ▼                                          ▼
+  vex_repo CSAF file              ◄─────  vex_repo CSAF file
+```
+
+---
+
+## GitHub Action: `create-vex`
+
+Detects the latest git tag of the calling repository, scans it with [Trivy](https://trivy.dev), and creates or updates a CSAF 2.0 VEX file in a target VEX repository. Opens `vex-pending` issues for new CVEs requiring human assessment. Carries forward existing assessments from the previous tag so already-triaged CVEs do not generate new issues. Also runs a second Trivy scan against the default branch and labels open issues `fixed-in-<default-branch>` when the CVE is no longer present there.
+
+Designed to run on a schedule so newly disclosed CVEs are caught even for already-released tags.
+
+> **Note:** `create-vex` currently supports **public repositories only**. Trivy clones the repository without authentication, so private repositories will result in a clone failure.
+
+### Usage
+
+```yaml
+name: Update VEX
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # weekly
+  workflow_dispatch:
+
+jobs:
+  create-vex:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Losant/losant-vex-tools/create-vex@main
+        with:
+          vex_repo: Losant/losant-vex
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VEX_GITHUB_TOKEN: ${{ secrets.VEX_GITHUB_TOKEN }}
+```
+
+### Inputs
+
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `vex_repo` | no | `GITHUB_REPOSITORY` | `owner/repo` where CSAF VEX files are stored. Defaults to the calling repository. |
+| `vex_repo_dir` | no | empty | Directory prefix within `vex_repo` for CSAF files. When omitted, files are written at `<package-name>/<tag>.csaf.json`. When set, files are written at `<vex_repo_dir>/<package-name>/<tag>.csaf.json`. |
+| `package_name` | no | repository name | Package or product name used in the CSAF file and VEX path. |
+| `purl_type` | no | auto-detected | PURL package type for product identification (e.g. `npm`, `pypi`, `gem`, `cargo`, `golang`). Auto-detected from `package.json`, `pyproject.toml`/`setup.py`, or `Gemfile`/`Gemfile.lock` when omitted. Required when auto-detection fails — the action will error if the type cannot be determined, since Trivy needs a valid PURL to match the VEX file on subsequent runs. |
+| `min_severity` | no | `HIGH` | Minimum severity to open a `vex-pending` issue: `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`. All severities are still recorded in the CSAF file regardless of this threshold. |
+| `disable_issues` | no | `false` | Set to `true` to skip all issue creation and updates entirely. |
+
+### Environment variables
+
+| Variable | Description |
+|---|---|
+| `GITHUB_TOKEN` | Token with read access to the calling repository and `issues:write` on the calling repository. |
+| `VEX_GITHUB_TOKEN` | Token with `contents:write` on `vex_repo`. Falls back to `GITHUB_TOKEN` if not set. |
+| `DISABLE_ISSUES` | Set to any non-empty value to disable all issue creation and updates (same effect as `disable_issues: true`). |
+
+### How it works
+
+1. Fetches the latest two git tags and the repository's default branch name via the GitHub API.
+2. Reads the existing CSAF file for the latest tag from `vex_repo` (if a previous scheduled run already created it) and the previous tag's CSAF file for carry-forward data.
+3. Scans the latest tag with `trivy repo --tag <tag>`.
+4. For each CVE found by Trivy, checks the current CSAF file first:
+   - If already assessed as `not_affected` or `known_affected` by a human — skips (no override).
+   - If already `under_investigation` — keeps that status and removes the CVE from carry-forward tracking.
+   - If not yet in the file — carries forward the status from the previous tag's CSAF (`not_affected` or `known_affected` only); otherwise sets `under_investigation`.
+5. CVEs that were `under_investigation` or `known_affected` in the previous tag but are absent from the current Trivy scan are marked `fixed`.
+6. Writes the updated CSAF file to `vex_repo`.
+7. Opens or updates `vex-pending` issues for CVEs that are `under_investigation` and meet the severity threshold. Closes issues for CVEs marked `fixed`.
+8. Scans the default branch with `trivy repo` (no `--tag`) and adds or removes the `fixed-in-<default-branch>` label on open issues depending on whether the CVE is still present there.
+
+### CSAF file layout
+
+```
+<vex_repo>/
+  <package-name>/
+    v1.0.0.csaf.json   ← one file per released tag
+    v1.1.0.csaf.json
+
+# with vex_repo_dir set:
+<vex_repo>/
+  <vex_repo_dir>/
+    <package-name>/
+      v1.0.0.csaf.json
+      v1.1.0.csaf.json
+```
+
 ---
 
 ## GitHub Action: `issue-vex-assertions`
@@ -51,10 +148,10 @@ Processes recently closed `vex-pending` issues in the calling repository, writes
 
 ### Building the action
 
-The action runs from a compiled bundle at `issue-vex-assertions/dist/index.js`. Rebuild it after any source change:
+The action runs from a compiled bundle at `<action-name>/dist/index.js`. Rebuild all action bundles after any source change:
 
 ```sh
-pnpm build:action
+pnpm build:actions
 ```
 
 ---
@@ -93,6 +190,7 @@ const doc = createVexDocument(existingCsafJson);
 | `updateVulnerabilityStatus(cveId, productId, status, { justification, label, remediationCategory, remediationDetails })` | Sets the VEX status for a product within a vulnerability. Moves the product between status buckets and updates threats, flags, remediations, and notes as appropriate for the status. Valid statuses: `known_not_affected`, `known_affected`, `fixed`, `under_investigation`. |
 | `incrementVersion()` | Bumps the document version number, updates `current_release_date`, and appends a revision history entry. |
 | `getCveProductStatus(cveId, productId)` | Returns the current status string for a product/CVE pair, or `null` if not set. |
+| `getCveProductSnapshot(cveId, productId)` | Returns `{ justification, label, remediationCategory, remediationDetails }` for a product/CVE pair, reading from the internal threats, flags, and remediations maps. All fields are `null` if not set. Returns `null` if the CVE is not present. |
 | `getProducts()` | Returns all product branch entries from the `product_tree`. |
 | `toJson()` | Serializes the document to a plain CSAF 2.0 JSON object ready for storage. |
 
@@ -189,5 +287,5 @@ Returns a one-line CVSS summary string (e.g. `CVSS 7.5 · NETWORK · LOW complex
 pnpm install
 pnpm run setup      # one-time: configures git hooks via husky
 pnpm test
-pnpm build:action   # compiles issue-vex-assertions to dist/
+pnpm build:actions  # compiles all actions to their dist/ directories
 ```

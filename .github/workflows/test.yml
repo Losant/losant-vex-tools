@@ -36,7 +36,7 @@ jobs:
 
       - run: pnpm test
 
-      - run: pnpm run build:action
+      - run: pnpm run build:actions
 
       - name: Check dist is up to date
-        run: git diff --exit-code issue-vex-assertions/dist
+        run: git diff --exit-code **/dist

@@ -1,4 +1,4 @@
 #!/usr/bin/env sh
 pnpm run lint:changed
-pnpm run build:action
-git add issue-vex-assertions/dist
+pnpm run build:actions
+git add **/dist
