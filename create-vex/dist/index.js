@@ -35129,7 +35129,7 @@ function createAppAuth(options) {
 
 
 const parseIssueMetadata = (issue) => {
-  const titleMatch = issue.title.match(/^\[VEX\] (CVE-[\d-]+)/);
+  const titleMatch = issue.title.match(/^\[VEX\] (\w{3,}-[\d-]+)/);
   if (!titleMatch) { return null; }
   const metaMatch = issue.body?.match(/<!-- VEX_META\n([\s\S]+?)\r?\n-->/);
   if (!metaMatch) { return null; }
@@ -35359,7 +35359,7 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
       owner, repo, state: 'open', labels: 'vex-pending', per_page: 100, page
     });
     for (const issue of data) {
-      const match = issue.title.match(/^\[VEX\] (CVE-[\d-]+)/);
+      const match = issue.title.match(/^\[VEX\] (\w{3,}-[\d-]+)/);
       if (match) { map.set(match[1], issue); }
     }
     if (data.length < 100) { return map; }
@@ -35439,7 +35439,7 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
       }
     }
 
-    const severityMatch = issue.body?.match(/^## CVE-[\d-]+ — (.+)$/m);
+    const severityMatch = issue.body?.match(/^## \w{3,}-[\d-]+ — (.+)$/m);
     const currentSeverity = severityMatch?.[1] ?? 'UNKNOWN';
     const severity = overrideSeverity ?? currentSeverity;
 
