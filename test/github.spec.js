@@ -282,6 +282,17 @@ ${JSON.stringify({ paths })}
     const body = makeBody({ 'p/v1.csaf.json': ['x:v1'] });
     parseIssueMetadata(makeIssue('[VEX] CVE-2024-12345', body)).cveId.should.equal('CVE-2024-12345');
   });
+
+  it('parses non-CVE vulnerability IDs such as MAL-', () => {
+    const body = makeBody({ 'platform/v1.0.0.csaf.json': ['us-docker.pkg.dev/p/l/api:v1'] });
+    const result = parseIssueMetadata(makeIssue('[VEX] MAL-2026-12033 - aedes_clusters', body));
+    result.cveId.should.equal('MAL-2026-12033');
+  });
+
+  it('returns null for a prefix shorter than 3 characters', () => {
+    const body = makeBody({ 'platform/v1.0.0.csaf.json': ['us-docker.pkg.dev/p/l/api:v1'] });
+    (parseIssueMetadata(makeIssue('[VEX] AB-2026-1', body)) === null).should.be.true();
+  });
 });
 
 describe('formatCvssLine', () => {
