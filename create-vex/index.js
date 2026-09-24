@@ -34,12 +34,10 @@ const manageIssues = async (ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
 
   const openIssues = await ghRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
   const updatedDoc = vexDoc.toJson();
-
-  await forEachSerialP(updatedDoc.vulnerabilities, async (vuln) => {
+  await forEachSerialP(async (vuln) => {
     const { cve: cveId, product_status: ps } = vuln;
     const underInvestigation = ps?.under_investigation ?? [];
     const fixed = ps?.fixed ?? [];
-
     if (underInvestigation.includes(currentProductId)) {
       const finding = trivyResults.get(cveId);
       if (!finding || !meetsMinSeverity(finding.severity, minSeverity)) { return; }
@@ -80,7 +78,7 @@ const manageIssues = async (ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
         });
       }
     }
-  });
+  }, updatedDoc.vulnerabilities);
 
   // Check if CVEs are fixed in the default branch (HEAD)
   trivyScan(['repo', '--branch', defaultBranch, repoUrl, '--output', '/tmp/trivy-head.json'], trivyEnv);
