@@ -293,6 +293,12 @@ ${JSON.stringify({ paths })}
     const body = makeBody({ 'platform/v1.0.0.csaf.json': ['us-docker.pkg.dev/p/l/api:v1'] });
     (parseIssueMetadata(makeIssue('[VEX] AB-2026-1', body)) === null).should.be.true();
   });
+
+  it('parses a GHSA ID containing letters in its non-prefix segments', () => {
+    const body = makeBody({ 'platform/v1.0.0.csaf.json': ['us-docker.pkg.dev/p/l/api:v1'] });
+    const result = parseIssueMetadata(makeIssue('[VEX] GHSA-rcw4-f5rp-g42v', body));
+    result.cveId.should.equal('GHSA-rcw4-f5rp-g42v');
+  });
 });
 
 describe('formatCvssLine', () => {
@@ -412,6 +418,75 @@ describe('buildVexIssueBody', () => {
     const metaMatch = body.match(/<!-- VEX_META\n([\s\S]+?)\n-->/);
     const meta = JSON.parse(metaMatch[1]);
     meta.packages[0].type.should.equal('NPM');
+  });
+});
+
+describe('getOpenVexCveIssuesMap', () => {
+  const makeRepo = (issues) => createGithubVexRepo(null, {
+    octokit: {
+      request: async () => ({ data: issues })
+    }
+  });
+
+  const issue = (title, number) => ({ title, number });
+
+  it('maps a GHSA ID containing letters in its non-prefix segments', async () => {
+    const repo = makeRepo([issue('[VEX] GHSA-rcw4-f5rp-g42v', 1)]);
+    const map = await repo.getOpenVexCveIssuesMap({ owner: 'o', repo: 'r' });
+    map.has('GHSA-rcw4-f5rp-g42v').should.be.true();
+    map.get('GHSA-rcw4-f5rp-g42v').number.should.equal(1);
+  });
+
+  it('maps a CVE ID', async () => {
+    const repo = makeRepo([issue('[VEX] CVE-2024-1234', 2)]);
+    const map = await repo.getOpenVexCveIssuesMap({ owner: 'o', repo: 'r' });
+    map.has('CVE-2024-1234').should.be.true();
+    map.get('CVE-2024-1234').number.should.equal(2);
+  });
+
+  it('maps a MAL- ID with a trailing package name', async () => {
+    const repo = makeRepo([issue('[VEX] MAL-2026-12033 - aedes_clusters', 3)]);
+    const map = await repo.getOpenVexCveIssuesMap({ owner: 'o', repo: 'r' });
+    map.has('MAL-2026-12033').should.be.true();
+    map.get('MAL-2026-12033').number.should.equal(3);
+  });
+
+  it('maps multiple issues of different ID formats in the same page', async () => {
+    const repo = makeRepo([
+      issue('[VEX] CVE-2024-1234', 1),
+      issue('[VEX] MAL-2026-12033 - aedes_clusters', 2),
+      issue('[VEX] GHSA-rcw4-f5rp-g42v', 3)
+    ]);
+    const map = await repo.getOpenVexCveIssuesMap({ owner: 'o', repo: 'r' });
+    [...map.keys()].should.deepEqual(['CVE-2024-1234', 'MAL-2026-12033', 'GHSA-rcw4-f5rp-g42v']);
+  });
+});
+
+describe('updateVexIssue severity extraction', () => {
+  const makeRepo = (updateSpy) => createGithubVexRepo(null, {
+    octokit: {
+      issues: {
+        update: updateSpy,
+        createComment: async () => {}
+      }
+    }
+  });
+
+  it('preserves severity parsed from a GHSA-style heading', async () => {
+    const paths = { 'platform/v1.0.0.csaf.json': ['us-docker.pkg.dev/p/l/api:v1'] };
+    const body = buildVexIssueBody({ cveId: 'GHSA-rcw4-f5rp-g42v', paths, severity: 'HIGH', referenceUrl: null });
+    const issue = { number: 1, title: '[VEX] GHSA-rcw4-f5rp-g42v', body };
+    let updateBody;
+    const repo = makeRepo(async (opts) => { updateBody = opts.body; });
+    await repo.updateVexIssue({
+      owner: 'o',
+      repo: 'r',
+      issue,
+      cveId: 'GHSA-rcw4-f5rp-g42v',
+      vexPath: 'platform/v1.0.0.csaf.json',
+      productIds: ['us-docker.pkg.dev/p/l/api:v2']
+    });
+    updateBody.should.containEql('## GHSA-rcw4-f5rp-g42v — HIGH');
   });
 });
 
