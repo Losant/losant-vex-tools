@@ -15,6 +15,13 @@ module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("fs");
 
 /***/ }),
 
+/***/ 857:
+/***/ ((module) => {
+
+module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("os");
+
+/***/ }),
+
 /***/ 928:
 /***/ ((module) => {
 
@@ -28,8 +35,10 @@ module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("path");
 __nccwpck_require__.a(__webpack_module__, async (__webpack_handle_async_dependencies__, __webpack_async_result__) => { try {
 /* harmony import */ var fs__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(896);
 /* harmony import */ var path__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(928);
-/* harmony import */ var child_process__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(317);
-/* harmony import */ var _resolve_node_version_js__WEBPACK_IMPORTED_MODULE_3__ = __nccwpck_require__(618);
+/* harmony import */ var os__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(857);
+/* harmony import */ var child_process__WEBPACK_IMPORTED_MODULE_3__ = __nccwpck_require__(317);
+/* harmony import */ var _resolve_node_version_js__WEBPACK_IMPORTED_MODULE_4__ = __nccwpck_require__(618);
+
 
 
 
@@ -55,7 +64,9 @@ let currentPnpm = '';
 if (repoFileExists('package.json')) {
   try {
     const rootPkg = JSON.parse(readRepoFile('package.json'));
-    currentPnpm = rootPkg.packageManager?.replace('pnpm@', '') ?? '';
+    if (rootPkg.packageManager?.startsWith('pnpm@')) {
+      currentPnpm = rootPkg.packageManager.replace('pnpm@', '');
+    }
   } catch (err) {
     console.warn(`Warning reading package.json: ${err.message}`);
   }
@@ -80,10 +91,11 @@ const fail = (msg) => {
 
 // --- Main ---
 if (!nodeMajor) { fail('node_major_version input is required'); }
+if (scriptName && !repoFileExists(scriptName)) { fail(`script_name "${scriptName}" does not exist in the repo`); }
 
 let latestNode;
 try {
-  latestNode = await (0,_resolve_node_version_js__WEBPACK_IMPORTED_MODULE_3__/* .resolveLatestNode */ .Gg)(nodeMajor);
+  latestNode = await (0,_resolve_node_version_js__WEBPACK_IMPORTED_MODULE_4__/* .resolveLatestNode */ .Gg)(nodeMajor);
 } catch (err) {
   fail(err.message);
 }
@@ -105,7 +117,7 @@ try {
 const pnpmVersion = currentPnpmVersion && latestPnpm && latestPnpm !== currentPnpmVersion ? latestPnpm : '';
 
 console.log(`Current Node: ${currentNode || '(none)'}  →  Latest Node ${nodeMajor}.x: ${latestNode}${nodeVersion ? ' (will upgrade)' : ' (already current)'}`);
-console.log(`Current pnpm: ${currentPnpmVersion || '(none)'}  →  Latest pnpm: ${latestPnpm || '(unknown)'}${pnpmVersion ? ' (will upgrade)' : ' (already current)'}`);
+console.log(`Current pnpm: ${currentPnpmVersion || '(none)'}  →  Latest pnpm: ${latestPnpm || '(unknown)'}${nodeVersion && pnpmVersion ? ' (will upgrade)' : ' (already current)'}`);
 
 setOutput('current_node', currentNode);
 setOutput('current_pnpm', currentPnpm);
@@ -122,7 +134,7 @@ if (!nodeVersion) {
 setOutput('new_node_version', nodeVersion);
 
 const spawnLogged = (cmd, args, opts = {}) => {
-  const result = (0,child_process__WEBPACK_IMPORTED_MODULE_2__.spawnSync)(cmd, args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], ...opts });
+  const result = (0,child_process__WEBPACK_IMPORTED_MODULE_3__.spawnSync)(cmd, args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], ...opts });
   if (result.stdout) { process.stdout.write(result.stdout); }
   if (result.stderr) { process.stderr.write(result.stderr); }
   return result;
@@ -142,7 +154,7 @@ const installNode = (version) => {
     throw new Error(`Failed to install n:\n${[npmInstallN.stdout, npmInstallN.stderr].filter(Boolean).join('\n')}`);
   }
 
-  const nPrefix = (0,path__WEBPACK_IMPORTED_MODULE_1__.join)(process.env.RUNNER_TEMP || repoRoot, 'n');
+  const nPrefix = (0,path__WEBPACK_IMPORTED_MODULE_1__.join)(process.env.RUNNER_TEMP || (0,os__WEBPACK_IMPORTED_MODULE_2__.tmpdir)(), 'n');
   const nEnv = { ...process.env, N_PREFIX: nPrefix };
   const nInstall = spawnLogged('n', [version], { env: nEnv });
   if (nInstall.status !== 0) {
@@ -181,10 +193,28 @@ const runScript = (scriptPath, env, extraEnv = {}) => {
 };
 
 const replaceInFile = (filePath, from, to) => {
-  const content = (0,fs__WEBPACK_IMPORTED_MODULE_0__.readFileSync)(filePath, 'utf8');
+  if (!from || from === to) { return; }
+  const fullPath = (0,path__WEBPACK_IMPORTED_MODULE_1__.join)(repoRoot, filePath);
+  const content = (0,fs__WEBPACK_IMPORTED_MODULE_0__.readFileSync)(fullPath, 'utf8');
   const updated = content.replaceAll(from, to);
   if (updated !== content) {
-    (0,fs__WEBPACK_IMPORTED_MODULE_0__.writeFileSync)(filePath, updated);
+    (0,fs__WEBPACK_IMPORTED_MODULE_0__.writeFileSync)(fullPath, updated);
+    console.log(`  Updated ${filePath}`);
+  }
+};
+
+const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Matches "node": "<optional range operator><currentNode>", preserving the
+// range operator (^, ~, >=, <=, >, <) so ranges like "^20.11.0" still resolve.
+const replaceNodeEngine = (filePath, from, to) => {
+  if (!from || from === to) { return; }
+  const fullPath = (0,path__WEBPACK_IMPORTED_MODULE_1__.join)(repoRoot, filePath);
+  const content = (0,fs__WEBPACK_IMPORTED_MODULE_0__.readFileSync)(fullPath, 'utf8');
+  const pattern = new RegExp(`("node"\\s*:\\s*")(\\^|~|>=|<=|>|<)?${escapeRegExp(from)}(")`);
+  const updated = content.replace(pattern, (match, pre, rangeOperator = '', post) => `${pre}${rangeOperator}${to}${post}`);
+  if (updated !== content) {
+    (0,fs__WEBPACK_IMPORTED_MODULE_0__.writeFileSync)(fullPath, updated);
     console.log(`  Updated ${filePath}`);
   }
 };
@@ -194,7 +224,7 @@ const performGenericUpgrade = (env, withPnpm) => {
   writeRepoFile('.node-version', `${nodeVersion}\n`);
   console.log('  Updated .node-version');
 
-  const found = (0,child_process__WEBPACK_IMPORTED_MODULE_2__.spawnSync)('find', [
+  const found = (0,child_process__WEBPACK_IMPORTED_MODULE_3__.spawnSync)('find', [
     '.',
     '(', '-name', 'node_modules', '-o', '-name', '.git', '-o', '-name', 'dist', ')', '-prune', '-o',
     '(', '-name', 'package.json', '-o', '-name', 'Dockerfile', '-o', '-name', '*.Dockerfile', ')',
@@ -210,7 +240,7 @@ const performGenericUpgrade = (env, withPnpm) => {
   for (const f of found.stdout.trim().split('\n').filter(Boolean)) {
     if (f.endsWith('package.json')) {
       if (currentNode) {
-        replaceInFile(f, `"node": "${currentNode}"`, `"node": "${nodeVersion}"`);
+        replaceNodeEngine(f, currentNode, nodeVersion);
       }
       if (withPnpm && pnpmVersion && currentPnpm) {
         replaceInFile(f, `"pnpm@${currentPnpm}"`, `"pnpm@${pnpmVersion}"`);
@@ -219,14 +249,14 @@ const performGenericUpgrade = (env, withPnpm) => {
       if (currentNode) {
         replaceInFile(f, `node:${currentNode}`, `node:${nodeVersion}`);
       }
-      if (withPnpm && pnpmVersion && currentPnpm) {
-        replaceInFile(f, `pnpm@${currentPnpm}`, `pnpm@${pnpmVersion}`);
+      if (withPnpm && pnpmVersion && currentPnpmVersion) {
+        replaceInFile(f, `pnpm@${currentPnpmVersion}`, `pnpm@${pnpmVersion}`);
       }
     }
   }
 
   console.log('Running pnpm install...');
-  const res = spawnLogged('pnpm', ['install'], { env });
+  const res = spawnLogged('pnpm', ['install', '--no-frozen-lockfile'], { env });
   return {
     success: res.status === 0 && !res.error,
     output: [res.error?.message, res.stdout, res.stderr].filter(Boolean).join('\n').trim()
@@ -261,6 +291,8 @@ try {
 let pnpmInstallNote = '';
 if (pnpmVersion) {
   pnpmInstallNote = installPnpm(pnpmVersion, spawnEnv);
+} else if (currentPnpmVersion) {
+  pnpmInstallNote = installPnpm(currentPnpmVersion, spawnEnv);
 }
 
 const runUpgrade = (withPnpm) => {
@@ -284,9 +316,9 @@ if (pnpmVersion) {
   } else {
     console.log('\nAttempt 1 failed. Resetting workspace and retrying with node upgrade only (no pnpm)...');
     gitReset();
-    if (currentPnpm) {
-      console.log(`Reverting global pnpm to current version ${currentPnpm}...`);
-      installPnpm(currentPnpm, spawnEnv);
+    if (currentPnpmVersion) {
+      console.log(`Reverting global pnpm to current version ${currentPnpmVersion}...`);
+      installPnpm(currentPnpmVersion, spawnEnv);
     }
 
     // Attempt 2: Node only

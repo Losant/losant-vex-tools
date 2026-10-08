@@ -19,19 +19,14 @@ inputs:
 outputs:
   current_node:
     description: Node.js version found in .node-version before the upgrade
-    value: ${{ steps.run.outputs.current_node }}
   current_pnpm:
     description: pnpm version found in package.json before the upgrade
-    value: ${{ steps.run.outputs.current_pnpm }}
   new_node_version:
     description: New Node.js version if an upgrade was performed, empty string if already current
-    value: ${{ steps.run.outputs.new_node_version }}
   new_pnpm:
     description: New pnpm version if upgraded, empty string if unchanged
-    value: ${{ steps.run.outputs.new_pnpm }}
   notes:
     description: Warnings or errors from failed attempts; empty on clean success
-    value: ${{ steps.run.outputs.notes }}
 
 runs:
   using: node24
