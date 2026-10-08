@@ -156,6 +156,90 @@ pnpm build:actions
 
 ---
 
+## GitHub Action: `auto-upgrade-node`
+
+Checks for updates to a specified Node.js major version (and latest pnpm) and automatically updates repository files. If an upgrade is available, installs the new versions on the runner and runs either a custom upgrade shell script or a built-in generic upgrade across `.node-version`, `package.json` engines, and Dockerfiles, followed by `pnpm install`. Employs progressive fallback and retry logic: if upgrading with pnpm fails, it retries with Node.js only; if that also fails, it updates only `.node-version` so developers are alerted via pull request to review and upgrade manually.
+
+Designed to run on a schedule to keep repositories up to date with the latest runtime and package manager patch/minor releases.
+
+### Usage
+
+```yaml
+name: Upgrade Node
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # weekly
+  workflow_dispatch:
+
+jobs:
+  upgrade-node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Losant/losant-vex-tools/auto-upgrade-node@main
+        id: upgrade
+        with:
+          node_major_version: '24'
+
+      - name: Create Pull Request
+        if: steps.upgrade.outputs.new_node_version != ''
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore(deps): upgrade Node.js to ${{ steps.upgrade.outputs.new_node_version }}"
+          title: "chore(deps): upgrade Node.js to ${{ steps.upgrade.outputs.new_node_version }}"
+          body: |
+            Upgraded Node.js to ${{ steps.upgrade.outputs.new_node_version }}.
+            ${{ steps.upgrade.outputs.new_pnpm && format('Upgraded pnpm to {0}.', steps.upgrade.outputs.new_pnpm) || '' }}
+
+            ${{ steps.upgrade.outputs.notes }}
+          branch: auto-upgrade-node
+```
+
+### Inputs
+
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `node_major_version` | yes | — | Node.js major version to check for upgrades (e.g. `"24"`). |
+| `script_name` | no | empty | Repo-relative path to a custom upgrade shell script (e.g. `scripts/upgrade-node-version.sh`). When provided, the script is called with `NODE_VERSION`, `PNPM_VERSION`, `SKIP_NODE_INSTALL=1`, `SKIP_BUILD=1`, and `COREPACK_ENABLE_STRICT=0`. If omitted, generic upgrade runs instead. |
+
+### Outputs
+
+| Output | Description |
+|---|---|
+| `current_node` | Node.js version found in `.node-version` before the upgrade. |
+| `current_pnpm` | pnpm version found in `package.json` before the upgrade. |
+| `new_node_version` | New Node.js version if an upgrade was performed, or empty string if already current. |
+| `new_pnpm` | New pnpm version if upgraded, or empty string if unchanged. |
+| `notes` | Markdown-formatted warnings or error output from failed attempts; empty on clean success. |
+
+### How it works
+
+1. Reads the current Node.js version from `.node-version` (if present) and the current pnpm version from `package.json` (`packageManager` field).
+2. Queries the official Node.js distribution index (`https://nodejs.org/dist/index.json`) for the latest release matching `node_major_version`, and queries the npm registry for the latest `pnpm` release.
+3. If Node.js is already at the latest release for the specified major version, the action exits immediately with `new_node_version` set to an empty string.
+4. If an upgrade is available:
+   - Installs the target Node.js version on the runner via `n` (configured in a temporary prefix directory and added to `PATH`).
+   - Installs the target or current `pnpm` version globally via `npm install -g`.
+   - Executes the upgrade using either the custom script or the built-in generic upgrade.
+5. **Generic upgrade** (when `script_name` is omitted):
+   - Updates `.node-version` with the new Node.js version.
+   - Searches the repository for `package.json`, `Dockerfile`, and `*.Dockerfile` files (ignoring `node_modules`, `.git`, and `dist`).
+   - Updates `engines.node` in `package.json` (preserving any semver range operators such as `^`, `~`, or `>=`) and updates `packageManager` if pnpm is also being upgraded.
+   - Replaces `node:<current_version>` and `pnpm@<current_version>` in Dockerfiles with the new versions.
+   - Runs `pnpm install --no-frozen-lockfile` to update lockfiles.
+6. **Custom script** (when `script_name` is provided):
+   - Executes `bash <script_name>` with the following environment variables:
+     - `NODE_VERSION`: New Node.js version.
+     - `PNPM_VERSION`: New pnpm version (or empty string if on a Node-only attempt).
+     - `SKIP_NODE_INSTALL`: `'1'`.
+     - `SKIP_BUILD`: `'1'`.
+     - `COREPACK_ENABLE_STRICT`: `'0'`.
+7. **Progressive retry and fallback**:
+   - If pnpm was included in the upgrade and Attempt 1 fails: resets the workspace (`git checkout -- .` and `git clean -fd`), restores the previous global pnpm version, and retries the upgrade with Node.js only (Attempt 2). If Attempt 2 succeeds, `new_pnpm` is set to an empty string and the Attempt 1 failure details are logged in `notes`.
+   - If Attempt 2 also fails (or if a Node-only upgrade fails, or if installing Node.js on the runner fails): resets the workspace and updates only `.node-version` so developers are alerted via git diff or pull request to inspect and run the upgrade manually. The failure output from each attempt is captured in `notes`.
+
+---
+
 ## Library: `src/csaf.js`
 
 Provides `createVexDocument`, a factory that creates or hydrates a CSAF 2.0 VEX document and exposes a mutation API over it.
