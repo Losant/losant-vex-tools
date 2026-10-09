@@ -1,0 +1,33 @@
+name: Upgrade Node.js
+description: >
+  Runs a named upgrade script with retry logic (node+pnpm → node only → .node-version only).
+  Without a script_name, runs a generic upgrade across Dockerfiles, package.json engines,
+  and .node-version, then runs pnpm install.
+
+inputs:
+  node_major_version:
+    description: Node.js major version to check for upgrades (e.g. "24")
+    required: true
+  script_name:
+    description: >
+      Repo-relative path to an upgrade shell script (e.g. scripts/upgrade-node-version.sh).
+      Called with NODE_VERSION, PNPM_VERSION, SKIP_NODE_INSTALL=1, SKIP_BUILD=1, COREPACK_ENABLE_STRICT=0.
+      If omitted, the generic upgrade runs instead.
+    required: false
+    default: ''
+
+outputs:
+  current_node:
+    description: Node.js version found in .node-version before the upgrade
+  current_pnpm:
+    description: pnpm version found in package.json before the upgrade
+  new_node_version:
+    description: New Node.js version if an upgrade was performed, empty string if already current
+  new_pnpm:
+    description: New pnpm version if upgraded, empty string if unchanged
+  notes:
+    description: Warnings or errors from failed attempts; empty on clean success
+
+runs:
+  using: node24
+  main: dist/index.js
