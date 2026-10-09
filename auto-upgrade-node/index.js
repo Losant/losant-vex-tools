@@ -40,8 +40,13 @@ const setOutput = (name, value) => {
     console.log(`[output] ${name}=${value}`);
     return;
   }
-  const delimiter = `ghadelimiter_${name}_${Date.now()}`;
-  appendFileSync(process.env.GITHUB_OUTPUT, `${name}<<${delimiter}\n${value}\n${delimiter}\n`);
+  const strVal = String(value ?? '');
+  if (strVal.includes('\n')) {
+    const delimiter = `ghadelimiter_${name}_${Date.now()}`;
+    appendFileSync(process.env.GITHUB_OUTPUT, `${name}<<${delimiter}\n${strVal}\n${delimiter}\n`);
+  } else {
+    appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${strVal}\n`);
+  }
 };
 
 const fail = (msg) => {
@@ -77,7 +82,11 @@ try {
 const pnpmVersion = currentPnpmVersion && latestPnpm && latestPnpm !== currentPnpmVersion ? latestPnpm : '';
 
 console.log(`Current Node: ${currentNode || '(none)'}  →  Latest Node ${nodeMajor}.x: ${latestNode}${nodeVersion ? ' (will upgrade)' : ' (already current)'}`);
-console.log(`Current pnpm: ${currentPnpmVersion || '(none)'}  →  Latest pnpm: ${latestPnpm || '(unknown)'}${nodeVersion && pnpmVersion ? ' (will upgrade)' : ' (already current)'}`);
+let pnpmStatus = ' (already current)';
+if (pnpmVersion) {
+  pnpmStatus = nodeVersion ? ' (will upgrade)' : ' (update available, but Node is current)';
+}
+console.log(`Current pnpm: ${currentPnpmVersion || '(none)'}  →  Latest pnpm: ${latestPnpm || '(unknown)'}${pnpmStatus}`);
 
 setOutput('current_node', currentNode);
 setOutput('current_pnpm', currentPnpm);
@@ -102,7 +111,7 @@ const spawnLogged = (cmd, args, opts = {}) => {
 
 const gitReset = () => {
   console.log('Resetting git workspace to clean state...');
-  spawnLogged('git', ['checkout', '--', '.']);
+  spawnLogged('git', ['reset', '--hard', 'HEAD']);
   spawnLogged('git', ['clean', '-fd']);
 };
 
@@ -125,6 +134,7 @@ const installNode = (version) => {
 };
 
 const installPnpm = (version, env) => {
+  if (!version) { return ''; }
   console.log(`Installing pnpm@${version} globally...`);
   const res = spawnLogged('npm', ['install', '-g', `pnpm@${version}`], { env });
   if (res.status !== 0) {
@@ -152,18 +162,21 @@ const runScript = (scriptPath, env, extraEnv = {}) => {
   };
 };
 
+const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Uses a digit-boundary-aware regex (not a plain substring replace) so that, e.g.,
+// `node:20.11.1` doesn't also match and corrupt `node:20.11.10`.
 const replaceInFile = (filePath, from, to) => {
   if (!from || from === to) { return; }
   const fullPath = join(repoRoot, filePath);
   const content = readFileSync(fullPath, 'utf8');
-  const updated = content.replaceAll(from, to);
+  const pattern = new RegExp(`(?<!\\d)${escapeRegExp(from)}(?!\\d)`, 'g');
+  const updated = content.replace(pattern, to);
   if (updated !== content) {
     writeFileSync(fullPath, updated);
     console.log(`  Updated ${filePath}`);
   }
 };
-
-const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // Matches "node": "<optional range operator><currentNode>", preserving the
 // range operator (^, ~, >=, <=, >, <) so ranges like "^20.11.0" still resolve.
@@ -171,8 +184,8 @@ const replaceNodeEngine = (filePath, from, to) => {
   if (!from || from === to) { return; }
   const fullPath = join(repoRoot, filePath);
   const content = readFileSync(fullPath, 'utf8');
-  const pattern = new RegExp(`("node"\\s*:\\s*")(\\^|~|>=|<=|>|<)?${escapeRegExp(from)}(")`);
-  const updated = content.replace(pattern, (match, pre, rangeOperator = '', post) => `${pre}${rangeOperator}${to}${post}`);
+  const pattern = new RegExp(`("node"\\s*:\\s*")(\\^|~|>=|<=|>|<)?\\s*${escapeRegExp(from)}(")`);
+  const updated = content.replace(pattern, (match, pre, op = '', post) => `${pre}${op ? `${op} ` : ''}${to}${post}`);
   if (updated !== content) {
     writeFileSync(fullPath, updated);
     console.log(`  Updated ${filePath}`);
@@ -190,10 +203,10 @@ const performGenericUpgrade = (env, withPnpm) => {
     '(', '-name', 'package.json', '-o', '-name', 'Dockerfile', '-o', '-name', '*.Dockerfile', ')',
     '-print'
   ], { cwd: repoRoot, encoding: 'utf8' });
-  if (found.error) {
+  if (found.error || found.status !== 0) {
     return {
       success: false,
-      output: `find failed: ${found.error.message}`
+      output: `find failed: ${found.error?.message || found.stderr || `exit code ${found.status}`}`
     };
   }
 
@@ -216,7 +229,7 @@ const performGenericUpgrade = (env, withPnpm) => {
   }
 
   console.log('Running pnpm install...');
-  const res = spawnLogged('pnpm', ['install', '--no-frozen-lockfile'], { env });
+  const res = spawnLogged('pnpm', ['install', '--no-frozen-lockfile'], { env: { ...env, COREPACK_ENABLE_STRICT: '0' } });
   return {
     success: res.status === 0 && !res.error,
     output: [res.error?.message, res.stdout, res.stderr].filter(Boolean).join('\n').trim()
@@ -248,12 +261,7 @@ try {
   process.exit(0);
 }
 
-let pnpmInstallNote = '';
-if (pnpmVersion) {
-  pnpmInstallNote = installPnpm(pnpmVersion, spawnEnv);
-} else if (currentPnpmVersion) {
-  pnpmInstallNote = installPnpm(currentPnpmVersion, spawnEnv);
-}
+const pnpmInstallNote = installPnpm(pnpmVersion || currentPnpmVersion, spawnEnv);
 
 const runUpgrade = (withPnpm) => {
   if (scriptName) {
@@ -276,9 +284,10 @@ if (pnpmVersion) {
   } else {
     console.log('\nAttempt 1 failed. Resetting workspace and retrying with node upgrade only (no pnpm)...');
     gitReset();
+    let revertPnpmNote = '';
     if (currentPnpmVersion) {
       console.log(`Reverting global pnpm to current version ${currentPnpmVersion}...`);
-      installPnpm(currentPnpmVersion, spawnEnv);
+      revertPnpmNote = installPnpm(currentPnpmVersion, spawnEnv);
     }
 
     // Attempt 2: Node only
@@ -295,8 +304,9 @@ if (pnpmVersion) {
         `**Attempt 1 error (with pnpm ${pnpmVersion}):**`,
         '```',
         try1.output,
-        '```'
-      ].join('\n'));
+        '```',
+        revertPnpmNote
+      ].filter(Boolean).join('\n'));
     } else {
       // Both attempts failed: Fall back to .node-version only
       applyMinimalFallback([
@@ -311,7 +321,8 @@ if (pnpmVersion) {
         '**Attempt 2 error (node only):**',
         '```',
         try2.output,
-        '```'
+        '```',
+        revertPnpmNote
       ]);
     }
   }
@@ -323,7 +334,7 @@ if (pnpmVersion) {
   if (try1.success) {
     console.log('Upgrade succeeded.');
     setOutput('new_pnpm', '');
-    setOutput('notes', '');
+    setOutput('notes', pnpmInstallNote);
   } else {
     console.log('\nUpgrade failed. Falling back to .node-version only...');
     applyMinimalFallback([

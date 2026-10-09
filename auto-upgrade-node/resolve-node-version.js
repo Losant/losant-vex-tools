@@ -18,7 +18,8 @@ export const resolveLatestNode = async (major, fetchImpl = fetch) => {
   if (!res.ok) { throw new Error(`Node.js dist error fetching versions: ${res.status}`); }
   const entries = await res.json();
   const versions = [];
-  for (const entry of entries ?? []) {
+  const entryList = Array.isArray(entries) ? entries : [];
+  for (const entry of entryList) {
     const ver = entry?.version;
     if (ver && pattern.test(ver)) {
       versions.push(ver.replace(/^v/, ''));
