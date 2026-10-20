@@ -158,7 +158,7 @@ pnpm build:actions
 
 ## GitHub Action: `auto-upgrade-node`
 
-Checks for updates to a specified Node.js major version (and latest pnpm) and automatically updates repository files. If an upgrade is available, installs the new versions on the runner and runs either a custom upgrade shell script or a built-in generic upgrade across `.node-version`, `package.json` engines, and Dockerfiles, followed by `pnpm install`. Employs progressive fallback and retry logic: if upgrading with pnpm fails, it retries with Node.js only; if that also fails, it updates only `.node-version` so developers are alerted via pull request to review and upgrade manually.
+Checks for updates to a specified Node.js major version (and latest pnpm) and automatically updates repository files. If an upgrade is available, installs the new versions on the runner and runs either a custom upgrade shell script or a built-in generic upgrade across `.node-version`, `package.json` engines, and Dockerfiles, followed by `pnpm install` and `pnpm -r up`. Employs progressive fallback and retry logic: if upgrading with pnpm fails, it retries with Node.js only; if that also fails, it updates only `.node-version` so developers are alerted via pull request to review and upgrade manually.
 
 Designed to run on a schedule to keep repositories up to date with the latest runtime and package manager patch/minor releases.
 
@@ -227,6 +227,7 @@ jobs:
    - Updates `engines.node` in `package.json` (preserving any semver range operators such as `^`, `~`, or `>=`) and updates `packageManager` if pnpm is also being upgraded.
    - Replaces `node:<current_version>` and `pnpm@<current_version>` in Dockerfiles with the new versions.
    - Runs `pnpm install --no-frozen-lockfile` to update lockfiles.
+   - Runs `pnpm -r up` to bump dependencies within their existing semver ranges across every workspace package.
 6. **Custom script** (when `script_name` is provided):
    - Executes `bash <script_name>` with the following environment variables:
      - `NODE_VERSION`: New Node.js version.

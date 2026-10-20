@@ -2,7 +2,7 @@ name: Upgrade Node.js
 description: >
   Runs a named upgrade script with retry logic (node+pnpm → node only → .node-version only).
   Without a script_name, runs a generic upgrade across Dockerfiles, package.json engines,
-  and .node-version, then runs pnpm install.
+  and .node-version, then runs pnpm install and pnpm -r up.
 
 inputs:
   node_major_version:

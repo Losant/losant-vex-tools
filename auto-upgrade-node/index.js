@@ -228,12 +228,20 @@ const performGenericUpgrade = (env, withPnpm) => {
     }
   }
 
-  console.log('Running pnpm install...');
-  const res = spawnLogged('pnpm', ['install', '--no-frozen-lockfile'], { env: { ...env, COREPACK_ENABLE_STRICT: '0' } });
-  return {
+  const pnpmEnv = { ...env, COREPACK_ENABLE_STRICT: '0' };
+  const asResult = (res) => ({
     success: res.status === 0 && !res.error,
     output: [res.error?.message, res.stdout, res.stderr].filter(Boolean).join('\n').trim()
-  };
+  });
+
+  console.log('Running pnpm install...');
+  const install = asResult(spawnLogged('pnpm', ['install', '--no-frozen-lockfile'], { env: pnpmEnv }));
+  if (!install.success) { return install; }
+
+  // Bump dependencies within their existing semver ranges across every workspace
+  // package, so the PR also picks up patch/minor releases alongside the runtime.
+  console.log('Running pnpm -r up...');
+  return asResult(spawnLogged('pnpm', ['-r', 'up'], { env: pnpmEnv }));
 };
 
 // Progressive fallback helper
