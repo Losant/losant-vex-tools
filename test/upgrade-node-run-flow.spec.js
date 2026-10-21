@@ -35,6 +35,7 @@ const stubFetch = ({ nodeVersion, pnpmVersion, nodeOk = true, pnpmOk = true }) =
 // captures every command the run made (for assertions) and lets each test script exactly
 // which commands fail, without a single real process ever getting spawned.
 const matchKey = (cmd, args) => {
+  if (cmd === 'git' && args[0] === 'reset') { return args.includes('--hard') ? 'git reset --hard' : 'git reset'; }
   if (cmd === 'git') { return `git ${args[0]}`; }
   if (cmd === 'npm') { return args.includes('n') ? 'npm install -g n' : 'npm install -g pnpm'; }
   if (cmd === 'n') { return 'n <version>'; }
@@ -142,6 +143,20 @@ describe('run', () => {
     calls.some((c) => c.key === 'git add').should.be.true();
   });
 
+  it('unstages the mid-run checkpoint before finishing, so a plain `git diff` downstream sees everything', async () => {
+    stubFetch({ nodeVersion: '24.3.0', pnpmVersion: '10.5.0' });
+    const repoRoot = setupRepo();
+    const calls = stubRunCmd();
+
+    const result = await run({ nodeMajor: '24', projectDirsInput: '', upgradeToLatest: false, repoRoot });
+
+    result.exitCode.should.equal(0);
+    const lastAddIndex = calls.findLastIndex((c) => c.key === 'git add');
+    const lastResetIndex = calls.findLastIndex((c) => c.key === 'git reset');
+    lastAddIndex.should.be.greaterThan(-1);
+    lastResetIndex.should.be.greaterThan(lastAddIndex);
+  });
+
   it('falls back to a Node-only pin when `n` fails to install the new version', async () => {
     stubFetch({ nodeVersion: '24.3.0', pnpmVersion: '10.0.0' });
     const repoRoot = setupRepo();
@@ -159,7 +174,7 @@ describe('run', () => {
     // No point reinstalling pnpm or touching dependencies once Node itself never installed.
     calls.some((c) => c.key === 'npm install -g pnpm').should.be.false();
     calls.some((c) => c.key === 'pnpm install').should.be.false();
-    calls.some((c) => c.key === 'git reset').should.be.true();
+    calls.some((c) => c.key === 'git reset --hard').should.be.true();
   });
 
   it('falls back to a Node-only pin when `pnpm install` fails after the Node bump', async () => {
@@ -230,7 +245,7 @@ describe('run', () => {
     result.outputs.notes.should.match(/pnpm -r up` failed/);
     result.outputs.notes.should.match(/rolled back/);
     calls.some((c) => c.key === 'git checkout').should.be.true();
-    calls.some((c) => c.key === 'git reset').should.be.false();
+    calls.some((c) => c.key === 'git reset --hard').should.be.false();
   });
 
   it('resets the workspace and exits 1 when the final dependency upgrade fails and nothing else upgraded', async () => {
@@ -246,7 +261,7 @@ describe('run', () => {
     result.exitCode.should.equal(1);
     result.outputs.new_node_version.should.equal('');
     result.outputs.new_pnpm.should.equal('');
-    calls.some((c) => c.key === 'git reset').should.be.true();
+    calls.some((c) => c.key === 'git reset --hard').should.be.true();
     calls.some((c) => c.key === 'git checkout').should.be.false();
   });
 

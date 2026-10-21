@@ -275,7 +275,7 @@ Rollback is `git checkout -- .` followed by `git clean -fd`, which restores the 
 
 > Checkpointing uses `git add -A`, so it relies on the repository's `.gitignore`. Anything `pnpm install` generates that is **not** ignored — `node_modules` in a repository that forgot to ignore it — will be staged and end up in the pull request.
 
-> Changes are left **staged** in the index rather than committed — the caller is expected to commit them. `has_changes` is `git status --porcelain` being non-empty, which covers staged and unstaged alike, and `peter-evans/create-pull-request` picks up both. A workflow that inspects the result with plain `git diff` will see nothing, though, and needs `git diff HEAD` instead.
+> Changes are left **unstaged** in the working tree rather than committed — the caller is expected to commit them. `git add -A` checkpoints during the run are an internal rollback mechanism only; everything is unstaged (`git reset`) right before the action returns, so a plain `git diff` in the calling workflow sees every change the run made, not just whatever happened to remain unstaged after the last checkpoint. `has_changes` is `git status --porcelain` being non-empty, which covers staged and unstaged alike either way.
 
 > `git clean -fd` does not remove ignored files, so an existing `node_modules` survives a rollback. This keeps the follow-up installs fast but means they are not fully hermetic. A `project_dirs` entry that is a nested git repository or submodule will not surface in the root `git status`, and so will not be reflected in `has_changes`.
 

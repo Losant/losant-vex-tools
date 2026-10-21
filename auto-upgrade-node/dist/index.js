@@ -444,6 +444,12 @@ const run = async ({ nodeMajor, projectDirsInput, upgradeToLatest, repoRoot }) =
   const notes = [];
 
   const finish = (exitCode) => {
+    // gitCheckpoint stages intermediate progress along the way purely so a later failure
+    // can roll back onto it — it's an internal safety net, not a signal that the run is
+    // done. Unstage everything before returning so a plain `git diff` in the calling
+    // workflow sees every change this run made, not just whatever is left unstaged after
+    // the last checkpoint.
+    io.runCmd('git', ['reset'], { cwd: repoRoot, quiet: true });
     const status = isDirty(repoRoot);
     if (status.ok) {
       outputs.has_changes = status.dirty ? 'true' : 'false';

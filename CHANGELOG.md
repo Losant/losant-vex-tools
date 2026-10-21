@@ -17,6 +17,7 @@
 ### Fixed
 
 - **`auto-upgrade-node`** — `package.json` files pinning Node.js in more than one place (for example `engines` and `volta`) are now fully updated rather than only at the first occurrence; range operators no longer gain a stray space (`">=24.1.0"` became `">= 24.2.0"`); `pnpm@<version>` pins outside `packageManager` are no longer silently skipped; Dockerfiles pinning Node or pnpm via a `NODE_VERSION` / `PNPM_VERSION` build arg (`FROM node:${NODE_VERSION}`, `pnpm@${PNPM_VERSION}`) are now rewritten, not just literal `node:<version>` / `pnpm@<version>` pins; and the `has_changes` output no longer relies on a predictable `Date.now()`-based `GITHUB_OUTPUT` delimiter.
+- **`auto-upgrade-node`** — **Breaking for workflows using plain `git diff`:** changes the action makes are left **unstaged** when the run finishes. Mid-run `git add -A` checkpoints are an internal rollback mechanism only; previously they left most of a successful run's changes staged, so a calling workflow capturing output with a bare `git diff` (rather than `git diff HEAD`) would only see whatever happened to remain unstaged after the last checkpoint — silently dropping most of the upgrade in multi-root (`project_dirs`) repos.
 
 ## v1.0.0 — 2026-09-11
 
