@@ -1,0 +1,9 @@
+{
+  "name": "test-repo",
+  "private": true,
+  "packageManager": "pnpm@10.0.0",
+  "engines": {
+    "node": "20.11.0",
+    "pnpm": "10.0.0"
+  }
+}
