@@ -234,6 +234,7 @@ Repositories with more than one pnpm project root, or that want major-version de
 
 ### How it works
 
+<<<<<<< HEAD
 1. Reads the current Node.js version from `.node-version` (if present) and the current pnpm version from `package.json` (`packageManager` field). If the working tree is already dirty, it logs a warning, since `has_changes` cannot then distinguish this run's edits from the pre-existing ones.
 2. Queries the official Node.js distribution index (`https://nodejs.org/dist/index.json`) for the latest release matching `node_major_version`, and queries the npm registry for the latest `pnpm` release. A pnpm upgrade is only considered when the repository already pins `packageManager`.
 3. Applies the upgrades in sequence — Node.js first and on its own, so that a failing install is unambiguously attributable to the Node.js bump rather than to the two changes together:
