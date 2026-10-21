@@ -234,31 +234,31 @@ Repositories with more than one pnpm project root, or that want major-version de
 
 ### How it works
 
-<<<<<<< HEAD
-1. Reads the current Node.js version from `.node-version` (if present) and the current pnpm version from `package.json` (`packageManager` field). If the working tree is already dirty, it logs a warning, since `has_changes` cannot then distinguish this run's edits from the pre-existing ones.
+1. Reads the current Node.js version from `.node-version` (if present) and the current pnpm version from `package.json` (`packageManager` field). A version that isn't a full `x.y.z` (e.g. a bare major like `"24"`) is treated as unknown, since using it as-is to rewrite files later could partial-match and corrupt a longer version elsewhere (`node:24.1.0` → `node:24.1.0` mangled into something else). If the working tree is already dirty, that state is staged as the first checkpoint before anything else runs, so a later rollback restores onto it instead of discarding it along with a failed attempt; if it can't be staged, the action refuses to run rather than risk that.
 2. Queries the official Node.js distribution index (`https://nodejs.org/dist/index.json`) for the latest release matching `node_major_version`, and queries the npm registry for the latest `pnpm` release. A pnpm upgrade is only considered when the repository already pins `packageManager`.
 3. Applies the upgrades in sequence — Node.js first and on its own, so that a failing install is unambiguously attributable to the Node.js bump rather than to the two changes together:
 
 ```
-Node upgrade available? ──YES──▶ rewrite node pins → pnpm install
-       │                          ├─ fails → reset, keep .node-version only, stop
-       │                          └─ ok    → git add -A   (checkpoint)
+Node upgrade available? ──YES──▶ rewrite node pins → pnpm install → checkpoint
+       │                          ├─ install fails    → roll back, keep .node-version only, stop
+       │                          ├─ checkpoint fails → roll back, keep .node-version only, stop
+       │                          └─ ok                → git add -A   (checkpoint)
        ▼
-pnpm upgrade available? ──YES──▶ rewrite pnpm pins → pnpm install
+pnpm upgrade available? ──YES──▶ rewrite pnpm pins → pnpm install → checkpoint
        │                          ├─ fails → roll back to checkpoint,
        │                          │          revert global pnpm
        │                          └─ ok    → git add -A   (checkpoint)
        ▼
 pnpm -r up  (always runs)
        └─ fails → anything checkpointed?  roll back to it, exit 0
-                  nothing upgraded?       reset, exit 1
+                  nothing upgraded?       roll back to it, exit 1
 ```
 
 Each upgrade gets its own `pnpm install`. That is deliberately more installs than the minimum — the action runs on a schedule and nothing waits on it, so clean attribution is worth more than the saved minutes.
 
-Rollback is `git checkout -- .` followed by `git clean -fd`, which restores the working tree from the index. Because each successful step is staged with `git add -A`, a later failure reverts only that step: the earlier upgrades and the lockfile they installed with are already in the index, so they survive untouched and never need to be re-applied or reinstalled.
+Rollback is `git checkout -- .` followed by `git clean -fd`, which restores the working tree from the index. Because each successful step is staged with `git add -A`, a later failure reverts only that step: the earlier upgrades and the lockfile they installed with are already in the index, so they survive untouched and never need to be re-applied or reinstalled. There is no separate "reset to HEAD" path — a dirty tree at the start of the run is itself staged as the very first checkpoint, so every rollback in the run, including total failure, restores onto that same baseline instead of discarding it.
 
-4. **Runner setup**: Node.js is installed via `n` (in a temporary prefix added to `PATH`) **only when Node.js is actually being upgraded**; otherwise the caller's Node.js is used as-is. pnpm is installed globally at the new version when upgrading, or reinstalled at the current version when `n` created a fresh global prefix.
+4. **Runner setup**: Node.js is installed via `n` (in a temporary prefix added to `PATH`) **only when Node.js is actually being upgraded**; otherwise the caller's Node.js is used as-is. pnpm is installed globally at the new version when upgrading, or reinstalled at the current version when `n` created a fresh global prefix — falling back to the latest pnpm release when the repository doesn't pin one via `packageManager`, since the fresh prefix needs *some* working `pnpm` on `PATH` either way.
 5. **File updates**:
    - Writes `.node-version` with the new Node.js version.
    - Finds the `package.json`, `Dockerfile`, and `*.Dockerfile` files to rewrite by asking `git ls-files`, so only tracked files are touched and ignored directories such as `node_modules` never come up.
@@ -268,7 +268,7 @@ Rollback is `git checkout -- .` followed by `git clean -fd`, which restores the 
 6. **Dependency upgrade**: runs `pnpm -r up` (or `pnpm -r up --latest`) in the repository root and each `project_dirs` entry. Unlike install, this runs every directory even if an earlier one fails, since the roots are independent. Failures are reported in `notes`.
    - Either command adds `--ignore-workspace` for a `project_dirs` entry that has no `pnpm-workspace.yaml` of its own, so pnpm treats it as a standalone package instead of walking up to the repository root's workspace and installing/upgrading there instead.
 7. **Fallbacks**:
-   - If `pnpm install` fails on the Node.js bump, or installing Node.js on the runner fails: resets the workspace (`git reset --hard HEAD` and `git clean -fd`) and updates only `.node-version`, so the upgrade still surfaces in a pull request for manual follow-up. pnpm and the dependency upgrade are **skipped** in this case, since install is known to be broken.
+   - If installing Node.js on the runner fails, the post-bump `pnpm install` fails, or the checkpoint after it can't be staged: rolls back to the last checkpoint and updates only `.node-version`, so the upgrade still surfaces in a pull request for manual follow-up. pnpm and the dependency upgrade are **skipped** in this case, since install is known to be broken.
    - If `pnpm install` fails on the pnpm bump: rolls back to the checkpoint and restores the previous global pnpm version. `new_pnpm` is empty and the failure is captured in `notes`; the Node.js upgrade is kept exactly as it installed.
    - If only the final `pnpm -r up` fails: rolls back to the checkpoint, so the churned lockfiles are discarded and every upgrade that installed cleanly is kept. The pull request still opens, with the error in `notes`.
    - The action exits non-zero when the dependency upgrade fails and there is no Node.js or pnpm bump left to open a pull request for.

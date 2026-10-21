@@ -1,5 +1,5 @@
 import 'should';
-import { mkdtempSync, rmSync, cpSync, readFileSync } from 'fs';
+import { mkdtempSync, rmSync, cpSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -35,7 +35,6 @@ const stubFetch = ({ nodeVersion, pnpmVersion, nodeOk = true, pnpmOk = true }) =
 // captures every command the run made (for assertions) and lets each test script exactly
 // which commands fail, without a single real process ever getting spawned.
 const matchKey = (cmd, args) => {
-  if (cmd === 'git' && args[0] === 'reset') { return args.includes('--hard') ? 'git reset --hard' : 'git reset'; }
   if (cmd === 'git') { return `git ${args[0]}`; }
   if (cmd === 'npm') { return args.includes('n') ? 'npm install -g n' : 'npm install -g pnpm'; }
   if (cmd === 'n') { return 'n <version>'; }
@@ -45,8 +44,9 @@ const matchKey = (cmd, args) => {
 
 // There is no real git repo at the copied fixture path, so `git ls-files` needs a default
 // stand-in for every test that touches file rewriting; `git status` defaults to clean.
+// `-z` NUL-separates entries (see upgrade.js's listFiles), so the default must match.
 const DEFAULT_HANDLERS = {
-  'git ls-files': () => ({ success: true, output: 'package.json\nDockerfile\nscripts/package.json' }),
+  'git ls-files': () => ({ success: true, output: ['package.json', 'Dockerfile', 'scripts/package.json'].join('\0') }),
   'git status': () => ({ success: true, output: '' })
 };
 
@@ -141,6 +141,9 @@ describe('run', () => {
     calls.some((c) => c.key === 'npm install -g pnpm' && c.args[2] === 'pnpm@10.0.0').should.be.true();
     calls.some((c) => c.key === 'pnpm install').should.be.true();
     calls.some((c) => c.key === 'git add').should.be.true();
+    // `-z` NUL-terminates entries so a path git would otherwise C-quote (special/non-ASCII
+    // characters) comes back unquoted and usable as a literal path.
+    calls.some((c) => c.key === 'git ls-files' && c.args.includes('-z')).should.be.true();
   });
 
   it('unstages the mid-run checkpoint before finishing, so a plain `git diff` downstream sees everything', async () => {
@@ -155,6 +158,72 @@ describe('run', () => {
     const lastResetIndex = calls.findLastIndex((c) => c.key === 'git reset');
     lastAddIndex.should.be.greaterThan(-1);
     lastResetIndex.should.be.greaterThan(lastAddIndex);
+  });
+
+  it('installs the latest pnpm into the new Node prefix when the repo has no packageManager pin', async () => {
+    stubFetch({ nodeVersion: '24.3.0', pnpmVersion: '10.5.0' });
+    const repoRoot = setupRepo();
+    const pkgPath = join(repoRoot, 'package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    delete pkg.packageManager;
+    writeFileSync(pkgPath, JSON.stringify(pkg));
+    const calls = stubRunCmd();
+
+    const result = await run({ nodeMajor: '24', projectDirsInput: '', upgradeToLatest: false, repoRoot });
+
+    result.exitCode.should.equal(0);
+    result.outputs.new_node_version.should.equal('24.3.0');
+    // Without a pin there is nothing to "reinstall", but the new prefix still needs a
+    // working pnpm on PATH for the install below to run at all.
+    calls.some((c) => c.key === 'npm install -g pnpm' && c.args[2] === 'pnpm@10.5.0').should.be.true();
+  });
+
+  it('stages a pre-existing dirty tree as the first checkpoint, so a later rollback restores onto it', async () => {
+    stubFetch({ nodeVersion: '24.3.0', pnpmVersion: '10.0.0' });
+    const repoRoot = setupRepo();
+    const calls = stubRunCmd({
+      'git status': () => ({ success: true, output: 'M some-unrelated-file.js' }),
+      'n <version>': () => ({ success: false, output: 'n: network error' })
+    });
+
+    const result = await run({ nodeMajor: '24', projectDirsInput: '', upgradeToLatest: false, repoRoot });
+
+    result.exitCode.should.equal(0);
+    // The baseline checkpoint must happen before anything else touches the tree — right
+    // after the initial `git status` check, and before the Node install even starts.
+    const addIndex = calls.findIndex((c) => c.key === 'git add');
+    const installIndex = calls.findIndex((c) => c.key === 'npm install -g n');
+    addIndex.should.be.greaterThan(-1);
+    addIndex.should.be.lessThan(installIndex);
+  });
+
+  it('refuses to run when the dirty tree cannot be staged as a safe baseline', async () => {
+    stubFetch({ nodeVersion: '24.3.0', pnpmVersion: '10.0.0' });
+    const repoRoot = setupRepo();
+    stubRunCmd({
+      'git status': () => ({ success: true, output: 'M some-unrelated-file.js' }),
+      'git add': () => ({ success: false, output: 'fatal: Unable to create index.lock' })
+    });
+
+    const result = await run({ nodeMajor: '24', projectDirsInput: '', upgradeToLatest: false, repoRoot });
+
+    result.exitCode.should.equal(1);
+    result.error.should.match(/could not be staged as a safe baseline/);
+  });
+
+  it('falls back to a Node-only pin when the checkpoint cannot be staged after a successful install', async () => {
+    stubFetch({ nodeVersion: '24.3.0', pnpmVersion: '10.0.0' });
+    const repoRoot = setupRepo();
+    const calls = stubRunCmd({
+      'git add': () => ({ success: false, output: 'fatal: Unable to create index.lock' })
+    });
+
+    const result = await run({ nodeMajor: '24', projectDirsInput: '', upgradeToLatest: false, repoRoot });
+
+    result.exitCode.should.equal(0);
+    result.outputs.new_node_version.should.equal('24.3.0');
+    result.outputs.notes.should.match(/Could not checkpoint the Node 24\.3\.0 upgrade/);
+    calls.some((c) => c.key === 'git checkout').should.be.true();
   });
 
   it('falls back to a Node-only pin when `n` fails to install the new version', async () => {
@@ -174,7 +243,21 @@ describe('run', () => {
     // No point reinstalling pnpm or touching dependencies once Node itself never installed.
     calls.some((c) => c.key === 'npm install -g pnpm').should.be.false();
     calls.some((c) => c.key === 'pnpm install').should.be.false();
-    calls.some((c) => c.key === 'git reset --hard').should.be.true();
+    calls.some((c) => c.key === 'git checkout').should.be.true();
+  });
+
+  it('does not report new_pnpm from the Node-only fallback, since pnpm was never touched', async () => {
+    stubFetch({ nodeVersion: '24.3.0', pnpmVersion: '10.5.0' });
+    const repoRoot = setupRepo();
+    stubRunCmd({
+      'n <version>': () => ({ success: false, output: 'n: network error' })
+    });
+
+    const result = await run({ nodeMajor: '24', projectDirsInput: '', upgradeToLatest: false, repoRoot });
+
+    result.outputs.new_node_version.should.equal('24.3.0');
+    result.outputs.new_pnpm.should.equal('');
+    result.outputs.notes.should.match(/Never attempted to upgrade pnpm/);
   });
 
   it('falls back to a Node-only pin when `pnpm install` fails after the Node bump', async () => {
@@ -245,10 +328,9 @@ describe('run', () => {
     result.outputs.notes.should.match(/pnpm -r up` failed/);
     result.outputs.notes.should.match(/rolled back/);
     calls.some((c) => c.key === 'git checkout').should.be.true();
-    calls.some((c) => c.key === 'git reset --hard').should.be.false();
   });
 
-  it('resets the workspace and exits 1 when the final dependency upgrade fails and nothing else upgraded', async () => {
+  it('rolls back and exits 1 when the final dependency upgrade fails and nothing else upgraded', async () => {
     stubFetch({ nodeVersion: '20.11.0', pnpmVersion: '10.0.0' });
     const repoRoot = setupRepo();
     const calls = stubRunCmd({
@@ -261,8 +343,7 @@ describe('run', () => {
     result.exitCode.should.equal(1);
     result.outputs.new_node_version.should.equal('');
     result.outputs.new_pnpm.should.equal('');
-    calls.some((c) => c.key === 'git reset --hard').should.be.true();
-    calls.some((c) => c.key === 'git checkout').should.be.false();
+    calls.some((c) => c.key === 'git checkout').should.be.true();
   });
 
   it('adds --ignore-workspace only for project_dirs entries without their own pnpm-workspace.yaml', async () => {

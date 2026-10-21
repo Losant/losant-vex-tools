@@ -82,7 +82,7 @@ __nccwpck_require__.d(__webpack_exports__, {
   eF: () => (/* binding */ run)
 });
 
-// UNUSED EXPORTS: PNPM_REGISTRY_URL, applyNodeEdits, applyPnpmEdits, baseEnv, escapeRegExp, formatErrorBlock, gitCheckpoint, gitReset, gitRollback, installNode, installPnpm, io, isDirty, joinNotes, listFiles, pickVersions, pnpmInstallAll, pnpmUpgradeAll, readCurrentVersions, replaceBuildArg, replaceEnginePin, replaceInFile, resolveLatestPnpm, resolveProjectDirs, runCmd
+// UNUSED EXPORTS: PNPM_REGISTRY_URL, applyNodeEdits, applyPnpmEdits, baseEnv, escapeRegExp, formatErrorBlock, gitCheckpoint, gitRollback, installNode, installPnpm, io, isDirty, joinNotes, listFiles, pickVersions, pnpmInstallAll, pnpmUpgradeAll, readCurrentVersions, replaceBuildArg, replaceEnginePin, replaceInFile, resolveLatestPnpm, resolveProjectDirs, runCmd
 
 // EXTERNAL MODULE: external "fs"
 var external_fs_ = __nccwpck_require__(896);
@@ -165,11 +165,17 @@ const resolveProjectDirs = (input, repoRoot) => {
 
 // --- Version discovery --------------------------------------------------
 
+// Only a full x.y.z is safe to use later as a literal `from` string when rewriting files —
+// a bare major like "24" would partial-match "node:24.1.0" in a Dockerfile and mangle it
+// into "node:<new>.1.0". Treat anything shorter as unknown rather than risk that.
+const FULL_SEMVER = /^\d+\.\d+\.\d+$/;
+
 const readCurrentVersions = (repoRoot) => {
   let currentNode = '';
   const nodeVersionPath = (0,external_path_namespaceObject.join)(repoRoot, '.node-version');
   if ((0,external_fs_.existsSync)(nodeVersionPath)) {
-    currentNode = (0,external_fs_.readFileSync)(nodeVersionPath, 'utf8').trim().replace(/^v/, '');
+    const raw = (0,external_fs_.readFileSync)(nodeVersionPath, 'utf8').trim().replace(/^v/, '');
+    currentNode = FULL_SEMVER.test(raw) ? raw : '';
   }
 
   let currentPnpm = '';
@@ -187,7 +193,8 @@ const readCurrentVersions = (repoRoot) => {
 
   // Corepack writes packageManager as "pnpm@<version>+sha512.<hash>" — strip the
   // build-metadata suffix so comparisons against the registry's plain version work.
-  return { currentNode, currentPnpm, currentPnpmVersion: currentPnpm.split('+')[0] };
+  const currentPnpmVersion = currentPnpm.split('+')[0];
+  return { currentNode, currentPnpm, currentPnpmVersion: FULL_SEMVER.test(currentPnpmVersion) ? currentPnpmVersion : '' };
 };
 
 const resolveLatestPnpm = async () => {
@@ -205,23 +212,39 @@ const resolveLatestPnpm = async () => {
   }
 };
 
+// Numeric x.y.z comparison, not string inequality — a plain `!==` would count a stale or
+// hand-pinned *newer* current version as needing an "upgrade" to something older.
+const isNewerVersion = (candidate, current) => {
+  if (!current) { return true; }
+  const a = candidate.split('.').map(Number);
+  const b = current.split('.').map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const diff = (a[i] || 0) - (b[i] || 0);
+    if (diff !== 0) { return diff > 0; }
+  }
+  return false;
+};
+
 // An empty string for either version means "nothing to upgrade". A pnpm upgrade is
 // only considered when the repo already pins a version via packageManager.
 const pickVersions = ({ currentNode, latestNode, currentPnpmVersion, latestPnpm }) => ({
-  nodeVersion: latestNode && latestNode !== currentNode ? latestNode : '',
-  pnpmVersion: currentPnpmVersion && latestPnpm && latestPnpm !== currentPnpmVersion ? latestPnpm : ''
+  nodeVersion: latestNode && isNewerVersion(latestNode, currentNode) ? latestNode : '',
+  pnpmVersion: currentPnpmVersion && latestPnpm && isNewerVersion(latestPnpm, currentPnpmVersion) ? latestPnpm : ''
 });
 
 // --- File rewriting -----------------------------------------------------
 
 const upgrade_escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-// Uses a digit-boundary-aware regex (not a plain substring replace) so that, e.g.,
-// `node:20.11.1` doesn't also match and corrupt `node:20.11.10`.
+// Uses a version-boundary-aware regex (not a plain substring replace) so that, e.g.,
+// `node:20.11.1` doesn't also match and corrupt `node:20.11.10`, and `node:20.11.0` doesn't
+// match and corrupt a longer dotted tag like `node:20.11.0.5`. A trailing non-digit,
+// non-dot character (`node:20.11.0-alpine`) is still matched, since OS/variant suffixes on
+// the same version are the common case this exists to handle.
 const replaceInFile = (fullPath, from, to) => {
   if (!from || from === to) { return false; }
   const content = (0,external_fs_.readFileSync)(fullPath, 'utf8');
-  const pattern = new RegExp(`(?<!\\d)${upgrade_escapeRegExp(from)}(?!\\d)`, 'g');
+  const pattern = new RegExp(`(?<!\\d)${upgrade_escapeRegExp(from)}(?!\\d)(?!\\.\\d)`, 'g');
   const updated = content.replace(pattern, to);
   if (updated === content) { return false; }
   (0,external_fs_.writeFileSync)(fullPath, updated);
@@ -245,11 +268,12 @@ const replaceEnginePin = (fullPath, key, from, to) => {
 // Matches Docker build-arg syntax `<KEY>=<optional quote><from><optional quote>`, e.g.
 // `ARG NODE_VERSION=20.11.0` or `ENV NODE_VERSION="20.11.0"`, for Dockerfiles that pin via
 // `FROM node:${NODE_VERSION}` instead of a literal `node:<version>` tag. Reuses the same
-// digit-boundary guard as replaceInFile so `20.11.1` cannot partial-match `20.11.10`.
+// version-boundary guard as replaceInFile so `20.11.1` cannot partial-match `20.11.10` or
+// `20.11.0.5`.
 const replaceBuildArg = (fullPath, key, from, to) => {
   if (!from || from === to) { return false; }
   const content = (0,external_fs_.readFileSync)(fullPath, 'utf8');
-  const pattern = new RegExp(`(${upgrade_escapeRegExp(key)}\\s*=\\s*"?)(?<!\\d)${upgrade_escapeRegExp(from)}(?!\\d)`, 'g');
+  const pattern = new RegExp(`(${upgrade_escapeRegExp(key)}\\s*=\\s*"?)(?<!\\d)${upgrade_escapeRegExp(from)}(?!\\d)(?!\\.\\d)`, 'g');
   const updated = content.replace(pattern, `$1${to}`);
   if (updated === content) { return false; }
   (0,external_fs_.writeFileSync)(fullPath, updated);
@@ -281,16 +305,17 @@ const io = { runCmd };
 
 // Tracked package.json / Dockerfile / *.Dockerfile paths. Asking git means node_modules,
 // dist, and anything else ignored or untracked never shows up — no directory walk, and
-// nothing to prune.
-// TODO remove this - we should just be using find on the entire repo
+// nothing to prune. `-z` NUL-terminates entries instead of newline-separating them, so git
+// never C-quotes/escapes a path (which it otherwise does for non-ASCII or special
+// characters) — a quoted entry parsed as a plain string would resolve to the wrong path.
 const listFiles = (repoRoot) => {
-  const res = io.runCmd('git', ['ls-files'], { cwd: repoRoot, quiet: true });
+  const res = io.runCmd('git', ['ls-files', '-z'], { cwd: repoRoot, quiet: true });
   if (!res.success) {
     console.warn(`Warning: could not list tracked files: ${res.output}`);
     return [];
   }
-  return res.output.split('\n').reduce((acc, line) => {
-    const rel = line.trim();
+  return res.output.split('\0').reduce((acc, rel) => {
+    if (!rel) { return acc; }
     const name = rel.split('/').pop();
     if (name === 'package.json' || name.toLowerCase().includes('dockerfile')) {
       acc.push((0,external_path_namespaceObject.join)(repoRoot, rel));
@@ -347,21 +372,14 @@ const applyPnpmEdits = ({ repoRoot, files, currentPnpm, currentPnpmVersion, pnpm
   }
 };
 
-// `git clean -fd` deliberately leaves ignored files alone, so an existing node_modules
-// survives the reset. That keeps retries fast, but it does mean a retry is not hermetic.
-const gitReset = (repoRoot) => {
-  console.log('Resetting git workspace to clean state...');
-  const res = io.runCmd('git', ['reset', '--hard', 'HEAD'], { cwd: repoRoot });
-  if (!res.success) { return res; }
-  return io.runCmd('git', ['clean', '-fd'], { cwd: repoRoot });
-};
-
 // Stages the current, known-good state so a later step can be rolled back onto it.
 const gitCheckpoint = (repoRoot) => io.runCmd('git', ['add', '-A'], { cwd: repoRoot, quiet: true });
 
 // Restores the working tree from the index — back to the last checkpoint — discarding
 // whatever the failed step churned. Anything the failed step created is untracked by
-// then and `git clean` takes it; checkpointed files are in the index and survive.
+// then and `git clean` takes it; checkpointed files are in the index and survive. If the
+// tree was already dirty before this run started, that state is the first checkpoint, so
+// a rollback restores onto it rather than discarding it too.
 const gitRollback = (repoRoot) => {
   console.log('Rolling back to the last checkpoint...');
   const res = io.runCmd('git', ['checkout', '--', '.'], { cwd: repoRoot });
@@ -468,14 +486,13 @@ const run = async ({ nodeMajor, projectDirsInput, upgradeToLatest, repoRoot }) =
     if (pnpmVersion) {
       notes.push(`Never attempted to upgrade pnpm to version ${pnpmVersion}.`);
     }
-    const reset = gitReset(repoRoot);
+    const reset = gitRollback(repoRoot);
     if (!reset.success) {
       notes.push(formatErrorBlock('⚠️ Could not reset the workspace before the fallback:', reset.output));
     }
     (0,external_fs_.writeFileSync)((0,external_path_namespaceObject.join)(repoRoot, '.node-version'), `${nodeVersion}\n`);
     console.log('  Updated .node-version');
     outputs.new_node_version = nodeVersion;
-    outputs.new_pnpm = pnpmVersion;
     return finish(0);
   };
 
@@ -490,9 +507,17 @@ const run = async ({ nodeMajor, projectDirsInput, upgradeToLatest, repoRoot }) =
   }
   const dirs = resolveProjectDirs(projectDirsInput, repoRoot);
 
+  // The fallback paths below roll back to the last checkpoint to discard a failed
+  // attempt's mess. If the tree already had uncommitted work before this run started,
+  // stage it as the first checkpoint so a later rollback restores onto it instead of
+  // discarding it along with the failed attempt.
   const before = isDirty(repoRoot);
   if (before.ok && before.dirty) {
-    console.warn('::warning::Working tree was not clean before the upgrade; `has_changes` may include unrelated edits.');
+    console.warn('::warning::Working tree was not clean before the upgrade; staging it as a baseline so a failed attempt rolls back onto it instead of discarding it. `has_changes` may include these unrelated edits.');
+    const staged = gitCheckpoint(repoRoot);
+    if (!staged.success) {
+      return { outputs, exitCode: 1, error: `Working tree is not clean and could not be staged as a safe baseline: ${staged.output}` };
+    }
   }
 
   // 1. Discover versions.
@@ -528,11 +553,14 @@ const run = async ({ nodeMajor, projectDirsInput, upgradeToLatest, repoRoot }) =
     const nodeEdits = { repoRoot, files, currentNode, nodeVersion };
     applyNodeEdits(nodeEdits);
 
-    // A freshly `n`-installed Node has its own global prefix with no pnpm in it, so the
-    // current version has to be reinstalled there even when pnpm is not being upgraded.
-    const globalPnpm = installPnpm(currentPnpmVersion, env);
+    // A freshly `n`-installed Node has its own global prefix with no pnpm in it, so some
+    // version has to land there even when pnpm is not being upgraded — otherwise the
+    // install below has no `pnpm` on PATH at all. Prefer the repo's current pin; fall back
+    // to the latest release for a repo that doesn't pin one via packageManager.
+    const pnpmForNewPrefix = currentPnpmVersion || latestPnpm;
+    const globalPnpm = installPnpm(pnpmForNewPrefix, env);
     if (!globalPnpm.success) {
-      notes.push(formatErrorBlock(`⚠️ \`npm install -g pnpm@${currentPnpmVersion}\` failed on the Node ${nodeVersion} upgrade:`, globalPnpm.output));
+      notes.push(formatErrorBlock(`⚠️ \`npm install -g pnpm@${pnpmForNewPrefix}\` failed on the Node ${nodeVersion} upgrade:`, globalPnpm.output));
       notes.push('Only `.node-version` was updated — the upgrade could not be installed. Run it manually before merging.');
       return keepNodeVersionOnly(nodeVersion, pnpmVersion);
     }
@@ -543,8 +571,13 @@ const run = async ({ nodeMajor, projectDirsInput, upgradeToLatest, repoRoot }) =
       notes.push('Only `.node-version` was updated — the upgrade could not be installed. Run it manually before merging.');
       return keepNodeVersionOnly(nodeVersion, pnpmVersion);
     }
+    const checkpointed = gitCheckpoint(repoRoot);
+    if (!checkpointed.success) {
+      notes.push(formatErrorBlock(`⚠️ Could not checkpoint the Node ${nodeVersion} upgrade:`, checkpointed.output));
+      notes.push('Only `.node-version` was updated — the upgrade could not be safely checkpointed. Run it manually before merging.');
+      return keepNodeVersionOnly(nodeVersion, pnpmVersion);
+    }
     outputs.new_node_version = nodeVersion;
-    gitCheckpoint(repoRoot);
   }
 
   // 4. pnpm on top of a tree that is known to install. A failure rolls back to the
@@ -558,11 +591,15 @@ const run = async ({ nodeMajor, projectDirsInput, upgradeToLatest, repoRoot }) =
       console.log(`\nApplying pnpm ${pnpmVersion}...`);
       applyPnpmEdits({ repoRoot, files, currentPnpm, currentPnpmVersion, pnpmVersion });
       const install = pnpmInstallAll(dirs, env);
-      if (install.success) {
+      const checkpointed = install.success ? gitCheckpoint(repoRoot) : { success: false, output: '' };
+      if (install.success && checkpointed.success) {
         outputs.new_pnpm = pnpmVersion;
-        gitCheckpoint(repoRoot);
       } else {
-        notes.push(formatErrorBlock(`**\`pnpm install\` failed on the pnpm ${pnpmVersion} upgrade${inDir(repoRoot, install.failedDir)}:**`, install.output));
+        if (!install.success) {
+          notes.push(formatErrorBlock(`**\`pnpm install\` failed on the pnpm ${pnpmVersion} upgrade${inDir(repoRoot, install.failedDir)}:**`, install.output));
+        } else {
+          notes.push(formatErrorBlock(`⚠️ Could not checkpoint the pnpm ${pnpmVersion} upgrade:`, checkpointed.output));
+        }
         notes.push('⚠️ The pnpm upgrade was skipped because of that error. Review and apply it manually if needed.');
         gitRollback(repoRoot);
         if (currentPnpmVersion) {
@@ -588,7 +625,7 @@ const run = async ({ nodeMajor, projectDirsInput, upgradeToLatest, repoRoot }) =
   }
 
   // Nothing else upgraded, so there is no pull request worth opening.
-  gitReset(repoRoot);
+  gitRollback(repoRoot);
   return finish(1);
 };
 
