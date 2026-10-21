@@ -1,5 +1,7 @@
 export const NODE_DIST_URL = 'https://nodejs.org/dist/index.json';
 
+const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 export const pickLatestVersion = (versions) => {
   return versions.slice().sort((a, b) => {
     const partsA = a.split('.').map(Number);
@@ -13,7 +15,7 @@ export const pickLatestVersion = (versions) => {
 
 export const resolveLatestNode = async (major, fetchImpl = fetch) => {
   const majorNum = String(major).replace(/^v/, '');
-  const pattern = new RegExp(`^v?${majorNum}\\.\\d+\\.\\d+$`);
+  const pattern = new RegExp(`^v?${escapeRegExp(majorNum)}\\.\\d+\\.\\d+$`);
   const res = await fetchImpl(NODE_DIST_URL);
   if (!res.ok) { throw new Error(`Node.js dist error fetching versions: ${res.status}`); }
   const entries = await res.json();

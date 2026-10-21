@@ -158,9 +158,11 @@ pnpm build:actions
 
 ## GitHub Action: `auto-upgrade-node`
 
-Checks for updates to a specified Node.js major version (and latest pnpm) and automatically updates repository files. If an upgrade is available, installs the new versions on the runner and runs either a custom upgrade shell script or a built-in generic upgrade across `.node-version`, `package.json` engines, and Dockerfiles, followed by `pnpm install`. Employs progressive fallback and retry logic: if upgrading with pnpm fails, it retries with Node.js only; if that also fails, it updates only `.node-version` so developers are alerted via pull request to review and upgrade manually.
+Keeps Node.js, pnpm, and dependencies current. Node.js and pnpm are checked and upgraded **independently** — a pnpm bump no longer requires a Node.js bump — across `.node-version`, `package.json` engines, and Dockerfiles, each followed by `pnpm install`. Every run then finishes with a recursive dependency upgrade (`pnpm -r up`), so the action does useful work even when both runtimes are already current.
 
-Designed to run on a schedule to keep repositories up to date with the latest runtime and package manager patch/minor releases.
+Employs progressive fallback and retry logic: if upgrading with pnpm fails, it retries with Node.js only; if that also fails, it updates only `.node-version` so developers are alerted via pull request to review and upgrade manually.
+
+Designed to run on a schedule to keep repositories up to date with the latest runtime, package manager, and dependency releases.
 
 ### Usage
 
@@ -182,17 +184,33 @@ jobs:
           node_major_version: '24'
 
       - name: Create Pull Request
-        if: steps.upgrade.outputs.new_node_version != ''
+        if: steps.upgrade.outputs.has_changes == 'true'
         uses: peter-evans/create-pull-request@v6
         with:
-          commit-message: "chore(deps): upgrade Node.js to ${{ steps.upgrade.outputs.new_node_version }}"
-          title: "chore(deps): upgrade Node.js to ${{ steps.upgrade.outputs.new_node_version }}"
+          commit-message: "chore(deps): upgrade dependencies"
+          title: >-
+            chore(deps):
+            ${{ steps.upgrade.outputs.new_node_version && format('upgrade Node.js to {0}', steps.upgrade.outputs.new_node_version)
+              || steps.upgrade.outputs.new_pnpm && format('upgrade pnpm to {0}', steps.upgrade.outputs.new_pnpm)
+              || 'upgrade dependencies' }}
           body: |
-            Upgraded Node.js to ${{ steps.upgrade.outputs.new_node_version }}.
+            ${{ steps.upgrade.outputs.new_node_version && format('Upgraded Node.js to {0}.', steps.upgrade.outputs.new_node_version) || '' }}
             ${{ steps.upgrade.outputs.new_pnpm && format('Upgraded pnpm to {0}.', steps.upgrade.outputs.new_pnpm) || '' }}
+            Ran `pnpm -r up` to upgrade dependencies.
 
             ${{ steps.upgrade.outputs.notes }}
           branch: auto-upgrade-node
+```
+
+Repositories with more than one pnpm project root, or that want major-version dependency bumps:
+
+```yaml
+      - uses: Losant/losant-vex-tools/auto-upgrade-node@main
+        id: upgrade
+        with:
+          node_major_version: '24'
+          project_dirs: 'packages/api,tools/cli'
+          upgrade_to_latest: 'true'
 ```
 
 ### Inputs
@@ -200,7 +218,8 @@ jobs:
 | Input | Required | Default | Description |
 |---|---|---|---|
 | `node_major_version` | yes | — | Node.js major version to check for upgrades (e.g. `"24"`). |
-| `script_name` | no | empty | Repo-relative path to a custom upgrade shell script (e.g. `scripts/upgrade-node-version.sh`). When provided, the script is called with `NODE_VERSION`, `PNPM_VERSION`, `SKIP_NODE_INSTALL=1`, `SKIP_BUILD=1`, and `COREPACK_ENABLE_STRICT=0`. If omitted, generic upgrade runs instead. |
+| `project_dirs` | no | empty | Comma-separated, repo-relative directories, each treated as its own pnpm project root. `pnpm install` and the final `pnpm -r up` run in each of these **in addition to** the repository root. A bad entry (typo, nonexistent directory) is not validated ahead of time — it's left to fail at `pnpm install`, which reports it more clearly than a pre-flight check would. By then, the Node.js/pnpm pin edits earlier in the run may already be checkpointed. A `project_dirs` entry without its own `pnpm-workspace.yaml` runs with `--ignore-workspace`, so it installs/upgrades against its own `package.json` instead of being swept into the repository root's workspace. |
+| `upgrade_to_latest` | no | `'false'` | Set to `'true'` to run the final dependency upgrade as `pnpm -r up --latest`, allowing major-version bumps and rewriting `package.json` ranges. Defaults to `pnpm -r up`, which stays within the ranges already declared. |
 
 ### Outputs
 
@@ -208,35 +227,56 @@ jobs:
 |---|---|
 | `current_node` | Node.js version found in `.node-version` before the upgrade. |
 | `current_pnpm` | pnpm version found in `package.json` before the upgrade. |
-| `new_node_version` | New Node.js version if an upgrade was performed, or empty string if already current. |
-| `new_pnpm` | New pnpm version if upgraded, or empty string if unchanged. |
-| `notes` | Markdown-formatted warnings or error output from failed attempts; empty on clean success. |
+| `new_node_version` | New Node.js version if Node.js was upgraded, or empty string if it was already current. |
+| `new_pnpm` | New pnpm version if pnpm was upgraded, or empty string otherwise. Reachable without a Node.js upgrade, since the two are independent. |
+| `notes` | Markdown-formatted warnings or error output from failed attempts, including dependency upgrade failures; empty on clean success. |
+| `has_changes` | `'true'` when the run left uncommitted changes in the working tree, `'false'` otherwise. **Gate pull request creation on this**, not on `new_node_version` — dependency-only upgrades change files without changing the Node.js version. |
 
 ### How it works
 
-1. Reads the current Node.js version from `.node-version` (if present) and the current pnpm version from `package.json` (`packageManager` field).
-2. Queries the official Node.js distribution index (`https://nodejs.org/dist/index.json`) for the latest release matching `node_major_version`, and queries the npm registry for the latest `pnpm` release.
-3. If Node.js is already at the latest release for the specified major version, the action exits immediately with `new_node_version` set to an empty string.
-4. If an upgrade is available:
-   - Installs the target Node.js version on the runner via `n` (configured in a temporary prefix directory and added to `PATH`).
-   - Installs the target or current `pnpm` version globally via `npm install -g`.
-   - Executes the upgrade using either the custom script or the built-in generic upgrade.
-5. **Generic upgrade** (when `script_name` is omitted):
-   - Updates `.node-version` with the new Node.js version.
-   - Searches the repository for `package.json`, `Dockerfile`, and `*.Dockerfile` files (ignoring `node_modules`, `.git`, and `dist`).
-   - Updates `engines.node` in `package.json` (preserving any semver range operators such as `^`, `~`, or `>=`) and updates `packageManager` if pnpm is also being upgraded.
-   - Replaces `node:<current_version>` and `pnpm@<current_version>` in Dockerfiles with the new versions.
-   - Runs `pnpm install --no-frozen-lockfile` to update lockfiles.
-6. **Custom script** (when `script_name` is provided):
-   - Executes `bash <script_name>` with the following environment variables:
-     - `NODE_VERSION`: New Node.js version.
-     - `PNPM_VERSION`: New pnpm version (or empty string if on a Node-only attempt).
-     - `SKIP_NODE_INSTALL`: `'1'`.
-     - `SKIP_BUILD`: `'1'`.
-     - `COREPACK_ENABLE_STRICT`: `'0'`.
-7. **Progressive retry and fallback**:
-   - If pnpm was included in the upgrade and Attempt 1 fails: resets the workspace (`git checkout -- .` and `git clean -fd`), restores the previous global pnpm version, and retries the upgrade with Node.js only (Attempt 2). If Attempt 2 succeeds, `new_pnpm` is set to an empty string and the Attempt 1 failure details are logged in `notes`.
-   - If Attempt 2 also fails (or if a Node-only upgrade fails, or if installing Node.js on the runner fails): resets the workspace and updates only `.node-version` so developers are alerted via git diff or pull request to inspect and run the upgrade manually. The failure output from each attempt is captured in `notes`.
+1. Reads the current Node.js version from `.node-version` (if present) and the current pnpm version from `package.json` (`packageManager` field). If the working tree is already dirty, it logs a warning, since `has_changes` cannot then distinguish this run's edits from the pre-existing ones.
+2. Queries the official Node.js distribution index (`https://nodejs.org/dist/index.json`) for the latest release matching `node_major_version`, and queries the npm registry for the latest `pnpm` release. A pnpm upgrade is only considered when the repository already pins `packageManager`.
+3. Applies the upgrades in sequence — Node.js first and on its own, so that a failing install is unambiguously attributable to the Node.js bump rather than to the two changes together:
+
+```
+Node upgrade available? ──YES──▶ rewrite node pins → pnpm install
+       │                          ├─ fails → reset, keep .node-version only, stop
+       │                          └─ ok    → git add -A   (checkpoint)
+       ▼
+pnpm upgrade available? ──YES──▶ rewrite pnpm pins → pnpm install
+       │                          ├─ fails → roll back to checkpoint,
+       │                          │          revert global pnpm
+       │                          └─ ok    → git add -A   (checkpoint)
+       ▼
+pnpm -r up  (always runs)
+       └─ fails → anything checkpointed?  roll back to it, exit 0
+                  nothing upgraded?       reset, exit 1
+```
+
+Each upgrade gets its own `pnpm install`. That is deliberately more installs than the minimum — the action runs on a schedule and nothing waits on it, so clean attribution is worth more than the saved minutes.
+
+Rollback is `git checkout -- .` followed by `git clean -fd`, which restores the working tree from the index. Because each successful step is staged with `git add -A`, a later failure reverts only that step: the earlier upgrades and the lockfile they installed with are already in the index, so they survive untouched and never need to be re-applied or reinstalled.
+
+4. **Runner setup**: Node.js is installed via `n` (in a temporary prefix added to `PATH`) **only when Node.js is actually being upgraded**; otherwise the caller's Node.js is used as-is. pnpm is installed globally at the new version when upgrading, or reinstalled at the current version when `n` created a fresh global prefix.
+5. **File updates**:
+   - Writes `.node-version` with the new Node.js version.
+   - Finds the `package.json`, `Dockerfile`, and `*.Dockerfile` files to rewrite by asking `git ls-files`, so only tracked files are touched and ignored directories such as `node_modules` never come up.
+   - Updates every `"node": "<version>"` pin in `package.json` — `engines`, `volta`, and so on — preserving any semver range operator (`^`, `~`, `>=`). A major-only range such as `">=24"` is intentionally left alone, since it does not need bumping.
+   - Updates `packageManager` and any other `pnpm@<version>` pin in `package.json`, and replaces `node:<current_version>` and `pnpm@<current_version>` in Dockerfiles, along with `NODE_VERSION` / `PNPM_VERSION` build args (`ARG NODE_VERSION=<current_version>` / `ENV PNPM_VERSION=<current_version>`, etc.) for Dockerfiles that pin via `FROM node:${NODE_VERSION}` or `pnpm@${PNPM_VERSION}` instead of a literal tag.
+   - Runs `pnpm install --no-frozen-lockfile` in the repository root and each `project_dirs` entry, stopping at the first directory that fails.
+6. **Dependency upgrade**: runs `pnpm -r up` (or `pnpm -r up --latest`) in the repository root and each `project_dirs` entry. Unlike install, this runs every directory even if an earlier one fails, since the roots are independent. Failures are reported in `notes`.
+   - Either command adds `--ignore-workspace` for a `project_dirs` entry that has no `pnpm-workspace.yaml` of its own, so pnpm treats it as a standalone package instead of walking up to the repository root's workspace and installing/upgrading there instead.
+7. **Fallbacks**:
+   - If `pnpm install` fails on the Node.js bump, or installing Node.js on the runner fails: resets the workspace (`git reset --hard HEAD` and `git clean -fd`) and updates only `.node-version`, so the upgrade still surfaces in a pull request for manual follow-up. pnpm and the dependency upgrade are **skipped** in this case, since install is known to be broken.
+   - If `pnpm install` fails on the pnpm bump: rolls back to the checkpoint and restores the previous global pnpm version. `new_pnpm` is empty and the failure is captured in `notes`; the Node.js upgrade is kept exactly as it installed.
+   - If only the final `pnpm -r up` fails: rolls back to the checkpoint, so the churned lockfiles are discarded and every upgrade that installed cleanly is kept. The pull request still opens, with the error in `notes`.
+   - The action exits non-zero when the dependency upgrade fails and there is no Node.js or pnpm bump left to open a pull request for.
+
+> Checkpointing uses `git add -A`, so it relies on the repository's `.gitignore`. Anything `pnpm install` generates that is **not** ignored — `node_modules` in a repository that forgot to ignore it — will be staged and end up in the pull request.
+
+> Changes are left **staged** in the index rather than committed — the caller is expected to commit them. `has_changes` is `git status --porcelain` being non-empty, which covers staged and unstaged alike, and `peter-evans/create-pull-request` picks up both. A workflow that inspects the result with plain `git diff` will see nothing, though, and needs `git diff HEAD` instead.
+
+> `git clean -fd` does not remove ignored files, so an existing `node_modules` survives a rollback. This keeps the follow-up installs fast but means they are not fully hermetic. A `project_dirs` entry that is a nested git repository or submodule will not surface in the root `git status`, and so will not be reflected in `has_changes`.
 
 ---
 

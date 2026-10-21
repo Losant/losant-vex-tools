@@ -1,20 +1,27 @@
 name: Upgrade Node.js
 description: >
-  Runs a named upgrade script with retry logic (node+pnpm → node only → .node-version only).
-  Without a script_name, runs a generic upgrade across Dockerfiles, package.json engines,
-  and .node-version, then runs pnpm install.
+  Keeps Node.js, pnpm, and dependencies current. Upgrades Node.js and pnpm independently
+  across Dockerfiles, package.json engines, and .node-version, then always finishes with
+  a recursive dependency upgrade. Falls back progressively when an upgrade fails.
 
 inputs:
   node_major_version:
     description: Node.js major version to check for upgrades (e.g. "24")
     required: true
-  script_name:
+  project_dirs:
     description: >
-      Repo-relative path to an upgrade shell script (e.g. scripts/upgrade-node-version.sh).
-      Called with NODE_VERSION, PNPM_VERSION, SKIP_NODE_INSTALL=1, SKIP_BUILD=1, COREPACK_ENABLE_STRICT=0.
-      If omitted, the generic upgrade runs instead.
+      Comma-separated, repo-relative directories, each treated as its own pnpm project
+      root. `pnpm install` and the final `pnpm -r up` run in each of these in addition to
+      the repository root. Example: "packages/api,tools/cli".
     required: false
     default: ''
+  upgrade_to_latest:
+    description: >
+      Set to "true" to run the final dependency upgrade as `pnpm -r up --latest`, allowing
+      major-version bumps. Defaults to `pnpm -r up`, which stays within the semver ranges
+      already declared in package.json.
+    required: false
+    default: 'false'
 
 outputs:
   current_node:
@@ -22,11 +29,20 @@ outputs:
   current_pnpm:
     description: pnpm version found in package.json before the upgrade
   new_node_version:
-    description: New Node.js version if an upgrade was performed, empty string if already current
+    description: New Node.js version if Node was upgraded, empty string if it was already current
   new_pnpm:
-    description: New pnpm version if upgraded, empty string if unchanged
+    description: >
+      New pnpm version if pnpm was upgraded, empty string otherwise. Reachable without a
+      Node.js upgrade, since the two are independent.
   notes:
-    description: Warnings or errors from failed attempts; empty on clean success
+    description: >
+      Markdown warnings or errors from failed attempts, including dependency upgrade
+      failures; empty on clean success
+  has_changes:
+    description: >
+      "true" when the run left uncommitted changes in the working tree, "false" otherwise.
+      Gate pull request creation on this rather than on new_node_version, since
+      dependency-only upgrades change files without changing the Node.js version.
 
 runs:
   using: node24
