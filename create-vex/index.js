@@ -1,17 +1,12 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import { posix } from 'node:path';
-import { forEachSerialP } from 'omnibelt';
 import { createVexDocument } from '../src/csaf.js';
-import { createGithubVexRepo, parseIssueMetadata } from '../src/github.js';
-import { meetsMinSeverity, parseTrivyResults, updateVexDocWithTrivyFindings } from './trivy.js';
+import { createGithubVexRepo } from '../src/github.js';
+import { parseTrivyResults, updateVexDocWithTrivyFindings } from './trivy.js';
+import { manageIssues, io } from './manage-issues.js';
 import '../src/process-handlers.js';
 
 const getInput = (name) => process.env[`INPUT_${name.toUpperCase().replace(/-/g, '_')}`]?.trim() ?? '';
-
-const trivyScan = (args, env) => {
-  execFileSync('trivy', [...args, '--format', 'json', '--scanners', 'vuln', '--no-progress', '--quiet'], { stdio: ['ignore', 'ignore', 'inherit'], env });
-};
 
 const joinVexPath = (...parts) => posix.join(...parts).replace(/^\//, '');
 
@@ -24,85 +19,6 @@ const detectPurlType = () => {
 };
 
 const buildPurl = (type, name, version) => `pkg:${type.toLowerCase()}/${name}@${version}`;
-
-const manageIssues = async (ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
-  issuesOwner, issuesRepo, fixedInBranchLabel, currentVexPath, oldVexPath, currentProductId, defaultBranch, minSeverity
-}) => {
-  await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-pending' });
-  await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: 'vex-reflected' });
-  await ghRepo.ensureLabel({ owner: issuesOwner, repo: issuesRepo, name: fixedInBranchLabel, color: 'e4e669' });
-
-  const openIssues = await ghRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
-  const updatedDoc = vexDoc.toJson();
-  await forEachSerialP(async (vuln) => {
-    const { cve: cveId, product_status: ps } = vuln;
-    const underInvestigation = ps?.under_investigation ?? [];
-    const fixed = ps?.fixed ?? [];
-    if (underInvestigation.includes(currentProductId)) {
-      const finding = trivyResults.get(cveId);
-      if (!finding || !meetsMinSeverity(finding.severity, minSeverity)) { return; }
-
-      const existingIssue = openIssues.get(cveId);
-      const issueArgs = {
-        owner: issuesOwner,
-        repo: issuesRepo,
-        cveId,
-        vexPath: currentVexPath,
-        oldVexPath,
-        productIds: [currentProductId],
-        severity: finding.severity,
-        referenceUrl: finding.referenceUrl,
-        packages: finding.packages,
-        cvss: finding.cvss
-      };
-
-      if (!existingIssue) {
-        await ghRepo.openVexIssue(issueArgs);
-      } else {
-        await ghRepo.updateVexIssue({ ...issueArgs, issue: existingIssue });
-      }
-    }
-
-    if (fixed.includes(currentProductId)) {
-      const existingIssue = openIssues.get(cveId);
-      if (existingIssue) {
-        await ghRepo.updateVexIssue({
-          owner: issuesOwner,
-          repo: issuesRepo,
-          issue: existingIssue,
-          cveId,
-          vexPath: currentVexPath,
-          oldVexPath,
-          productIds: [],
-          fixedProductIds: [currentProductId]
-        });
-      }
-    }
-  }, updatedDoc.vulnerabilities);
-
-  // Check if CVEs are fixed in the default branch (HEAD)
-  trivyScan(['repo', '--branch', defaultBranch, repoUrl, '--output', '/tmp/trivy-head.json'], trivyEnv);
-  const trivyHeadOutput = JSON.parse(readFileSync('/tmp/trivy-head.json', 'utf-8'));
-  const headCveIds = new Set([...parseTrivyResults(trivyHeadOutput).keys()]);
-
-  // Re-fetch open issues since some may have been closed above
-  const remainingOpenIssues = await ghRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
-
-  await forEachSerialP([...remainingOpenIssues.entries()], async ([cveId, issue]) => {
-    const issuePaths = Object.keys(parseIssueMetadata(issue)?.paths ?? {});
-    const isRelevant = issuePaths.includes(currentVexPath) || (oldVexPath && issuePaths.includes(oldVexPath));
-    if (!isRelevant) { return; }
-
-    const isFixedInHead = !headCveIds.has(cveId);
-    const hasLabel = issue.labels?.some((l) => l.name === fixedInBranchLabel);
-
-    if (isFixedInHead && !hasLabel) {
-      await ghRepo.addLabels({ owner: issuesOwner, repo: issuesRepo, issueNumber: issue.number, labels: [fixedInBranchLabel] });
-    } else if (!isFixedInHead && hasLabel) {
-      await ghRepo.removeLabel({ owner: issuesOwner, repo: issuesRepo, issueNumber: issue.number, name: fixedInBranchLabel });
-    }
-  });
-};
 
 const run = async () => {
   const [repoOwner, repoName] = (process.env.GITHUB_REPOSITORY ?? '').split('/');
@@ -171,7 +87,7 @@ const run = async () => {
   if (currentDoc) {
     writeFileSync('/tmp/current-vex.json', JSON.stringify(currentDoc));
   }
-  trivyScan(['repo', '--tag', latestTag.name, repoUrl, ...vexArgs, '--output', '/tmp/trivy-tag.json'], trivyEnv);
+  io.trivyScan(['repo', '--tag', latestTag.name, repoUrl, ...vexArgs, '--output', '/tmp/trivy-tag.json'], trivyEnv);
 
   const trivyTagOutput = JSON.parse(readFileSync('/tmp/trivy-tag.json', 'utf-8'));
   const trivyResults = parseTrivyResults(trivyTagOutput);

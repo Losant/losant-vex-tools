@@ -1,6 +1,10 @@
 import 'should';
+import { writeFileSync } from 'node:fs';
+import { stub, restore } from 'sinon';
 import { createVexDocument } from '../src/csaf.js';
+import { buildVexIssueBody } from '../src/github.js';
 import { meetsMinSeverity, parseCvssVector, parseTrivyResults, updateVexDocWithTrivyFindings } from '../create-vex/trivy.js';
+import { manageIssues, io } from '../create-vex/manage-issues.js';
 
 const PRODUCT_ID = 'my-pkg:v1.1.0';
 
@@ -185,5 +189,66 @@ describe('updateVexDocWithTrivyFindings', () => {
     const prevMap = new Map([['CVE-2021-9999', { status: 'known_not_affected' }]]);
     updateVexDocWithTrivyFindings(doc, trivyResults, prevMap, PRODUCT_ID);
     (doc.getCveProductStatus('CVE-2021-9999', PRODUCT_ID) === null).should.be.true();
+  });
+});
+
+describe('manageIssues', () => {
+  const CVE_ID = 'CVE-2024-5555';
+  const VEX_PATH = 'my-pkg/v1.2.0.csaf.json';
+
+  afterEach(() => restore());
+
+  const makeFakeGhRepo = (createdIssue) => {
+    const calls = { getOpenVexCveIssuesMap: 0, addLabels: [], removeLabel: [] };
+    return {
+      calls,
+      ensureLabel: async () => {},
+      getOpenVexCveIssuesMap: async () => {
+        calls.getOpenVexCveIssuesMap += 1;
+        return new Map();
+      },
+      openVexIssue: async () => createdIssue,
+      updateVexIssue: async () => true,
+      addLabels: async (args) => { calls.addLabels.push(args); },
+      removeLabel: async (args) => { calls.removeLabel.push(args); }
+    };
+  };
+
+  it('labels a just-created issue as fixed-in-<branch> in the same run, without re-fetching open issues', async () => {
+    // CVE is present at the tag being scanned...
+    const trivyResults = parseTrivyResults(trivyOutput([makeVuln({ VulnerabilityID: CVE_ID })]));
+
+    const doc = makeDoc();
+    doc.upsertProduct({ name: 'my-pkg', productId: PRODUCT_ID, productName: 'my-pkg v1.2.0', purl: 'pkg:npm/my-pkg@1.2.0' });
+    updateVexDocWithTrivyFindings(doc, trivyResults, new Map(), PRODUCT_ID);
+
+    const createdIssue = {
+      number: 42,
+      title: `[VEX] ${CVE_ID}`,
+      labels: [{ name: 'vex-pending' }],
+      body: buildVexIssueBody({ cveId: CVE_ID, paths: { [VEX_PATH]: [PRODUCT_ID] }, severity: 'HIGH', referenceUrl: null })
+    };
+    const ghRepo = makeFakeGhRepo(createdIssue);
+
+    // ...but already gone from the default branch, so the head scan should report it as fixed.
+    stub(io, 'trivyScan').callsFake(() => {
+      writeFileSync('/tmp/trivy-head.json', JSON.stringify({ Results: [] }));
+    });
+
+    await manageIssues(ghRepo, doc, trivyResults, 'https://github.com/example/my-pkg', {}, {
+      issuesOwner: 'example',
+      issuesRepo: 'my-pkg',
+      fixedInBranchLabel: 'fixed-in-develop',
+      currentVexPath: VEX_PATH,
+      oldVexPath: null,
+      currentProductId: PRODUCT_ID,
+      defaultBranch: 'develop',
+      minSeverity: 'HIGH'
+    });
+
+    ghRepo.calls.getOpenVexCveIssuesMap.should.equal(1);
+    ghRepo.calls.addLabels.should.deepEqual([
+      { owner: 'example', repo: 'my-pkg', issueNumber: 42, labels: ['fixed-in-develop'] }
+    ]);
   });
 });

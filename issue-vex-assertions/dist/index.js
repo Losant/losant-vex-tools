@@ -35615,7 +35615,7 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
     const cvssChanged = JSON.stringify(resolvedCvss) !== JSON.stringify(existingCvss);
 
     const hasChanges = removedOldPath || productsChanged || packagesChanged || referenceUrlChanged || pkgFileLocationChanged || cvssChanged || severity !== currentSeverity;
-    if (!hasChanges && !force) { return; }
+    if (!hasChanges && !force) { return issue; }
 
     if (fixedProductIds.length) {
       await octokit.issues.createComment({
@@ -35639,6 +35639,7 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
         cveId, paths, severity, referenceUrl: resolvedReferenceUrl, packages: resolvedPackages, cvss: resolvedCvss, pkgFileLocation: resolvedPkgFileLocation
       })
     });
+    return true;
   };
 
   // Reads up to 100 comments (one page). Issues with more than 100 comments are not supported.
