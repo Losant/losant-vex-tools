@@ -31125,8 +31125,6 @@ var __webpack_exports__ = {};
 
 ;// CONCATENATED MODULE: external "node:fs"
 const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
-;// CONCATENATED MODULE: external "node:child_process"
-const external_node_child_process_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
 ;// CONCATENATED MODULE: external "node:path"
 const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
 // EXTERNAL MODULE: ./node_modules/.pnpm/omnibelt@4.1.0/node_modules/omnibelt/src/index.js
@@ -35451,7 +35449,7 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
     const cvssChanged = JSON.stringify(resolvedCvss) !== JSON.stringify(existingCvss);
 
     const hasChanges = removedOldPath || productsChanged || packagesChanged || referenceUrlChanged || pkgFileLocationChanged || cvssChanged || severity !== currentSeverity;
-    if (!hasChanges && !force) { return; }
+    if (!hasChanges && !force) { return issue; }
 
     if (fixedProductIds.length) {
       await octokit.issues.createComment({
@@ -35475,6 +35473,7 @@ const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) => {
         cveId, paths, severity, referenceUrl: resolvedReferenceUrl, packages: resolvedPackages, cvss: resolvedCvss, pkgFileLocation: resolvedPkgFileLocation
       })
     });
+    return true;
   };
 
   // Reads up to 100 comments (one page). Issues with more than 100 comments are not supported.
@@ -35658,37 +35657,21 @@ const updateVexDocWithTrivyFindings = (vexDoc, trivyResults, previousStatusMap, 
   }
 };
 
-;// CONCATENATED MODULE: ./src/process-handlers.js
-process.on('unhandledRejection', (err) => { console.error('Unhandled rejection:', err); process.exit(1); });
-process.on('uncaughtException', (err) => { console.error('Uncaught exception:', err); process.exit(1); });
-
-;// CONCATENATED MODULE: ./create-vex/index.js
+;// CONCATENATED MODULE: external "node:child_process"
+const external_node_child_process_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
+;// CONCATENATED MODULE: ./create-vex/manage-issues.js
 
 
 
 
 
-
-
-
-
-const getInput = (name) => process.env[`INPUT_${name.toUpperCase().replace(/-/g, '_')}`]?.trim() ?? '';
 
 const trivyScan = (args, env) => {
   (0,external_node_child_process_namespaceObject.execFileSync)('trivy', [...args, '--format', 'json', '--scanners', 'vuln', '--no-progress', '--quiet'], { stdio: ['ignore', 'ignore', 'inherit'], env });
 };
 
-const joinVexPath = (...parts) => external_node_path_namespaceObject.posix.join(...parts).replace(/^\//, '');
-
-const detectPurlType = () => {
-  const ws = process.env.GITHUB_WORKSPACE ?? '.';
-  if ((0,external_node_fs_namespaceObject.existsSync)(`${ws}/package.json`)) { return 'npm'; }
-  if ((0,external_node_fs_namespaceObject.existsSync)(`${ws}/pyproject.toml`) || (0,external_node_fs_namespaceObject.existsSync)(`${ws}/setup.py`)) { return 'pypi'; }
-  if ((0,external_node_fs_namespaceObject.existsSync)(`${ws}/Gemfile.lock`) || (0,external_node_fs_namespaceObject.existsSync)(`${ws}/Gemfile`)) { return 'gem'; }
-  return null;
-};
-
-const buildPurl = (type, name, version) => `pkg:${type.toLowerCase()}/${name}@${version}`;
+// Every trivy invocation goes through io.trivyScan — tests stub this one
+const io = { trivyScan };
 
 const manageIssues = async (ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
   issuesOwner, issuesRepo, fixedInBranchLabel, currentVexPath, oldVexPath, currentProductId, defaultBranch, minSeverity
@@ -35722,16 +35705,21 @@ const manageIssues = async (ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
       };
 
       if (!existingIssue) {
-        await ghRepo.openVexIssue(issueArgs);
+        const issue = await ghRepo.openVexIssue(issueArgs);
+        openIssues.set(cveId, issue);
       } else {
-        await ghRepo.updateVexIssue({ ...issueArgs, issue: existingIssue });
+        const updated = await ghRepo.updateVexIssue({ ...issueArgs, issue: existingIssue });
+        if (!updated) {
+          openIssues.delete(cveId);
+          return;
+        }
       }
     }
 
     if (fixed.includes(currentProductId)) {
       const existingIssue = openIssues.get(cveId);
       if (existingIssue) {
-        await ghRepo.updateVexIssue({
+        const updated = await ghRepo.updateVexIssue({
           owner: issuesOwner,
           repo: issuesRepo,
           issue: existingIssue,
@@ -35741,19 +35729,20 @@ const manageIssues = async (ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
           productIds: [],
           fixedProductIds: [currentProductId]
         });
+        if (!updated) {
+          openIssues.delete(cveId);
+          return;
+        }
       }
     }
   }, updatedDoc.vulnerabilities);
 
   // Check if CVEs are fixed in the default branch (HEAD)
-  trivyScan(['repo', '--branch', defaultBranch, repoUrl, '--output', '/tmp/trivy-head.json'], trivyEnv);
+  io.trivyScan(['repo', '--branch', defaultBranch, repoUrl, '--output', '/tmp/trivy-head.json'], trivyEnv);
   const trivyHeadOutput = JSON.parse((0,external_node_fs_namespaceObject.readFileSync)('/tmp/trivy-head.json', 'utf-8'));
   const headCveIds = new Set([...parseTrivyResults(trivyHeadOutput).keys()]);
 
-  // Re-fetch open issues since some may have been closed above
-  const remainingOpenIssues = await ghRepo.getOpenVexCveIssuesMap({ owner: issuesOwner, repo: issuesRepo });
-
-  await (0,src.forEachSerialP)([...remainingOpenIssues.entries()], async ([cveId, issue]) => {
+  await (0,src.forEachSerialP)(async ([cveId, issue]) => {
     const issuePaths = Object.keys(parseIssueMetadata(issue)?.paths ?? {});
     const isRelevant = issuePaths.includes(currentVexPath) || (oldVexPath && issuePaths.includes(oldVexPath));
     if (!isRelevant) { return; }
@@ -35766,8 +35755,35 @@ const manageIssues = async (ghRepo, vexDoc, trivyResults, repoUrl, trivyEnv, {
     } else if (!isFixedInHead && hasLabel) {
       await ghRepo.removeLabel({ owner: issuesOwner, repo: issuesRepo, issueNumber: issue.number, name: fixedInBranchLabel });
     }
-  });
+  }, [...openIssues.entries()]);
 };
+
+;// CONCATENATED MODULE: ./src/process-handlers.js
+process.on('unhandledRejection', (err) => { console.error('Unhandled rejection:', err); process.exit(1); });
+process.on('uncaughtException', (err) => { console.error('Uncaught exception:', err); process.exit(1); });
+
+;// CONCATENATED MODULE: ./create-vex/index.js
+
+
+
+
+
+
+
+
+const getInput = (name) => process.env[`INPUT_${name.toUpperCase().replace(/-/g, '_')}`]?.trim() ?? '';
+
+const joinVexPath = (...parts) => external_node_path_namespaceObject.posix.join(...parts).replace(/^\//, '');
+
+const detectPurlType = () => {
+  const ws = process.env.GITHUB_WORKSPACE ?? '.';
+  if ((0,external_node_fs_namespaceObject.existsSync)(`${ws}/package.json`)) { return 'npm'; }
+  if ((0,external_node_fs_namespaceObject.existsSync)(`${ws}/pyproject.toml`) || (0,external_node_fs_namespaceObject.existsSync)(`${ws}/setup.py`)) { return 'pypi'; }
+  if ((0,external_node_fs_namespaceObject.existsSync)(`${ws}/Gemfile.lock`) || (0,external_node_fs_namespaceObject.existsSync)(`${ws}/Gemfile`)) { return 'gem'; }
+  return null;
+};
+
+const buildPurl = (type, name, version) => `pkg:${type.toLowerCase()}/${name}@${version}`;
 
 const run = async () => {
   const [repoOwner, repoName] = (process.env.GITHUB_REPOSITORY ?? '').split('/');
@@ -35836,7 +35852,7 @@ const run = async () => {
   if (currentDoc) {
     (0,external_node_fs_namespaceObject.writeFileSync)('/tmp/current-vex.json', JSON.stringify(currentDoc));
   }
-  trivyScan(['repo', '--tag', latestTag.name, repoUrl, ...vexArgs, '--output', '/tmp/trivy-tag.json'], trivyEnv);
+  io.trivyScan(['repo', '--tag', latestTag.name, repoUrl, ...vexArgs, '--output', '/tmp/trivy-tag.json'], trivyEnv);
 
   const trivyTagOutput = JSON.parse((0,external_node_fs_namespaceObject.readFileSync)('/tmp/trivy-tag.json', 'utf-8'));
   const trivyResults = parseTrivyResults(trivyTagOutput);
