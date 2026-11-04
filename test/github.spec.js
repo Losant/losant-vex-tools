@@ -490,6 +490,65 @@ describe('updateVexIssue severity extraction', () => {
   });
 });
 
+describe('updateVexIssue notAffectedProductIds', () => {
+  it('comments and keeps the issue open when other products remain', async () => {
+    const paths = { 'platform/v1.0.0.csaf.json': ['prod:a', 'prod:b'] };
+    const body = buildVexIssueBody({ cveId: 'CVE-2026-1', paths, severity: 'HIGH', referenceUrl: null });
+    const issue = { number: 1, title: '[VEX] CVE-2026-1', body };
+    const comments = [];
+    const repo = createGithubVexRepo(null, {
+      octokit: {
+        issues: {
+          update: async () => {},
+          createComment: async (opts) => { comments.push(opts.body); }
+        }
+      }
+    });
+    await repo.updateVexIssue({
+      owner: 'o',
+      repo: 'r',
+      issue,
+      cveId: 'CVE-2026-1',
+      vexPath: 'platform/v1.0.0.csaf.json',
+      productIds: ['prod:a'],
+      notAffectedProductIds: ['prod:b']
+    });
+    comments.should.have.length(1);
+    comments[0].should.containEql('known_not_affected');
+    comments[0].should.containEql('`prod:b`');
+  });
+
+  it('closes the issue after commenting when no products remain', async () => {
+    const paths = { 'platform/v1.0.0.csaf.json': ['prod:a'] };
+    const body = buildVexIssueBody({ cveId: 'CVE-2026-2', paths, severity: 'HIGH', referenceUrl: null });
+    const issue = { number: 2, title: '[VEX] CVE-2026-2', body };
+    const calls = [];
+    const repo = createGithubVexRepo(null, {
+      octokit: {
+        issues: {
+          update: async (opts) => { calls.push(['update', opts]); },
+          createComment: async (opts) => { calls.push(['comment', opts.body]); },
+          createLabel: async () => {},
+          addLabels: async () => {},
+          removeLabel: async () => {}
+        }
+      }
+    });
+    await repo.updateVexIssue({
+      owner: 'o',
+      repo: 'r',
+      issue,
+      cveId: 'CVE-2026-2',
+      vexPath: 'platform/v1.0.0.csaf.json',
+      productIds: [],
+      notAffectedProductIds: ['prod:a']
+    });
+    calls[0][0].should.equal('comment');
+    calls[0][1].should.containEql('`prod:a`');
+    calls.some(([type, opts]) => type === 'update' && opts.state === 'closed').should.be.true();
+  });
+});
+
 describe('getRepoDetails tag filtering and sorting', () => {
   const makeRepo = (rawTags) => createGithubVexRepo(null, {
     octokit: {
