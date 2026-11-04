@@ -284,7 +284,7 @@ export const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) =>
   };
 
   const updateVexIssue = async ({
-    owner, repo, issue, cveId, vexPath, oldVexPath, productIds, fixedProductIds = [], severity: overrideSeverity, referenceUrl, packages = [], cvss = null, pkgFileLocation = null, force = false
+    owner, repo, issue, cveId, vexPath, oldVexPath, productIds, fixedProductIds = [], notAffectedProductIds = [], severity: overrideSeverity, referenceUrl, packages = [], cvss = null, pkgFileLocation = null, force = false
   }) => {
     const meta = parseIssueMetadata(issue);
     const paths = meta?.paths ? { ...meta.paths } : {};
@@ -304,7 +304,7 @@ export const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) =>
       removedOldPath = true;
     }
     let productsChanged = false;
-    if (!paths[vexPath] || fixedProductIds.length > 0 || difference(productIds, paths[vexPath]).length > 0 || difference(paths[vexPath], productIds).length > 0) {
+    if (!paths[vexPath] || fixedProductIds.length > 0 || notAffectedProductIds.length > 0 || difference(productIds, paths[vexPath]).length > 0 || difference(paths[vexPath], productIds).length > 0) {
       productsChanged = true;
       if (productIds.length > 0) {
         paths[vexPath] = productIds;
@@ -333,6 +333,15 @@ export const createGithubVexRepo = (token, { octokit: octokitOverride } = {}) =>
         repo,
         issue_number: issue.number,
         body: `The following products have been marked as **fixed**:\n${fixedProductIds.map((id) => `- \`${id}\``).join('\n')}`
+      });
+    }
+
+    if (notAffectedProductIds.length) {
+      await octokit.issues.createComment({
+        owner,
+        repo,
+        issue_number: issue.number,
+        body: `The following products are no longer reporting this vulnerability from the scanner and have been marked as **known_not_affected**:\n${notAffectedProductIds.map((id) => `- \`${id}\``).join('\n')}\n\nIf the vulnerability scanner reports this again, it will automatically revert to \`under_investigation\`.`
       });
     }
 
