@@ -17,17 +17,6 @@ inputs:
       still pick up any issues closed since the previous attempt.
       Set job timeout-minutes in your workflow to this same value.
     default: '360'
-  gcp_project:
-    description: >
-      GCP project ID. If omitted (along with cloud_run_job and cloud_run_region),
-      the Cloud Run Job trigger is skipped.
-    required: false
-  cloud_run_job:
-    description: Cloud Run Job name to trigger with LOAD_ONLY=true after VEX files are updated.
-    required: false
-  cloud_run_region:
-    description: Cloud Run region where the Cloud Run Job is deployed.
-    required: false
 
 # Required environment variables (set in your workflow's env or step env):
 #   GITHUB_TOKEN      - token with issues:write on the current (issues) repo

@@ -31071,45 +31071,22 @@ function wrappy (fn, cb) {
 
 /***/ }),
 
-/***/ 35317:
-/***/ ((module) => {
-
-module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("child_process");
-
-/***/ }),
-
-/***/ 39023:
-/***/ ((module) => {
-
-module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("util");
-
-/***/ }),
-
 /***/ 69332:
 /***/ ((__webpack_module__, __unused_webpack___webpack_exports__, __nccwpck_require__) => {
 
 __nccwpck_require__.a(__webpack_module__, async (__webpack_handle_async_dependencies__, __webpack_async_result__) => { try {
 /* harmony import */ var _src_process_handlers_js__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(27120);
-/* harmony import */ var child_process__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(35317);
-/* harmony import */ var util__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(39023);
-/* harmony import */ var omnibelt__WEBPACK_IMPORTED_MODULE_3__ = __nccwpck_require__(78957);
-/* harmony import */ var _src_csaf_js__WEBPACK_IMPORTED_MODULE_4__ = __nccwpck_require__(47280);
-/* harmony import */ var _src_github_js__WEBPACK_IMPORTED_MODULE_5__ = __nccwpck_require__(60728);
+/* harmony import */ var omnibelt__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(78957);
+/* harmony import */ var _src_csaf_js__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(47280);
+/* harmony import */ var _src_github_js__WEBPACK_IMPORTED_MODULE_3__ = __nccwpck_require__(60728);
 
 
 
 
-
-
-
-const execFileAsync = (0,util__WEBPACK_IMPORTED_MODULE_2__.promisify)(child_process__WEBPACK_IMPORTED_MODULE_1__.execFile);
 
 const TIMEOUT_MINUTES  = Number(process.env.INPUT_TIMEOUT_MINUTES) || 360;
 const LOOKBACK_MS      = (TIMEOUT_MINUTES + 1) * 60 * 1000;
 const VEX_REPO         = process.env.INPUT_VEX_REPO;
-const GCP_PROJECT      = process.env.INPUT_GCP_PROJECT;
-const CLOUD_RUN_JOB    = process.env.INPUT_CLOUD_RUN_JOB;
-const CLOUD_RUN_REGION = process.env.INPUT_CLOUD_RUN_REGION;
 
 if (!VEX_REPO) { throw new Error('INPUT_VEX_REPO (vex_repo action input) is required'); }
 const [VEX_OWNER, VEX_REPO_NAME] = VEX_REPO.split('/');
@@ -31117,8 +31094,8 @@ if (!VEX_OWNER || !VEX_REPO_NAME) { throw new Error('INPUT_VEX_REPO must be in "
 if (!process.env.GITHUB_REPOSITORY) { throw new Error('GITHUB_REPOSITORY env var is required'); }
 const [ISSUES_OWNER, ISSUES_REPO_NAME] = process.env.GITHUB_REPOSITORY.split('/');
 
-const issuesGhRepo = (0,_src_github_js__WEBPACK_IMPORTED_MODULE_5__/* .createGithubVexRepo */ .F6)(process.env.GITHUB_TOKEN);
-const vexGhRepo = (0,_src_github_js__WEBPACK_IMPORTED_MODULE_5__/* .createGithubVexRepo */ .F6)(process.env.VEX_GITHUB_TOKEN || process.env.GITHUB_TOKEN);
+const issuesGhRepo = (0,_src_github_js__WEBPACK_IMPORTED_MODULE_3__/* .createGithubVexRepo */ .F6)(process.env.GITHUB_TOKEN);
+const vexGhRepo = (0,_src_github_js__WEBPACK_IMPORTED_MODULE_3__/* .createGithubVexRepo */ .F6)(process.env.VEX_GITHUB_TOKEN || process.env.GITHUB_TOKEN);
 
 const run = async () => {
   const since = new Date(Date.now() - LOOKBACK_MS).toISOString();
@@ -31138,8 +31115,8 @@ const run = async () => {
   // Track which vexPaths each issue number spans so we can confirm all writes succeeded.
   const issueToVexPaths = new Map();
 
-  await (0,omnibelt__WEBPACK_IMPORTED_MODULE_3__.forEachSerialP)(async (issue) => {
-    const meta = (0,_src_github_js__WEBPACK_IMPORTED_MODULE_5__/* .parseIssueMetadata */ .aX)(issue);
+  await (0,omnibelt__WEBPACK_IMPORTED_MODULE_1__.forEachSerialP)(async (issue) => {
+    const meta = (0,_src_github_js__WEBPACK_IMPORTED_MODULE_3__/* .parseIssueMetadata */ .aX)(issue);
     if (!meta) { return; }
     const allProductIds = Object.values(meta.paths).flat();
     if (!allProductIds.length) { return; }
@@ -31147,7 +31124,7 @@ const run = async () => {
       owner: ISSUES_OWNER, repo: ISSUES_REPO_NAME, issueNumber: issue.number, allProductIds
     });
 
-    const missing = (0,omnibelt__WEBPACK_IMPORTED_MODULE_3__.difference)(allProductIds, assessments.map((a) => a.productId));
+    const missing = (0,omnibelt__WEBPACK_IMPORTED_MODULE_1__.difference)(allProductIds, assessments.map((a) => a.productId));
     if (missing.length > 0) {
       if (errors.length > 0) {
         const { error, body } = errors[0];
@@ -31193,7 +31170,7 @@ const run = async () => {
 
   // Write one VEX file per path; track which paths actually succeeded.
   const successfulVexPaths = new Set();
-  await (0,omnibelt__WEBPACK_IMPORTED_MODULE_3__.forEachSerialP)(async (vexPath) => {
+  await (0,omnibelt__WEBPACK_IMPORTED_MODULE_1__.forEachSerialP)(async (vexPath) => {
     const entries = byVexPath.get(vexPath);
     const existing = await vexGhRepo.readVexFile({ owner: VEX_OWNER, repo: VEX_REPO_NAME, path: vexPath });
     if (!existing) {
@@ -31202,7 +31179,7 @@ const run = async () => {
     }
 
     const { doc: rawDoc, sha } = existing;
-    const vexDoc = (0,_src_csaf_js__WEBPACK_IMPORTED_MODULE_4__/* .createVexDocument */ .B)(rawDoc);
+    const vexDoc = (0,_src_csaf_js__WEBPACK_IMPORTED_MODULE_2__/* .createVexDocument */ .B)(rawDoc);
 
     // Collect unique (issue, cveId) pairs so we can build commit messages.
     const issueCvePairs = new Map();
@@ -31240,23 +31217,10 @@ const run = async () => {
 
   if (!processedIssues.length) { return; }
   await issuesGhRepo.ensureLabel({ owner: ISSUES_OWNER, repo: ISSUES_REPO_NAME, name: 'vex-reflected' });
-  await (0,omnibelt__WEBPACK_IMPORTED_MODULE_3__.forEachSerialP)(async (issue) => {
+  await (0,omnibelt__WEBPACK_IMPORTED_MODULE_1__.forEachSerialP)(async (issue) => {
     await issuesGhRepo.markIssueAsReflected({ owner: ISSUES_OWNER, repo: ISSUES_REPO_NAME, issue });
     console.log(`  Labeled #${issue.number} as vex-reflected, removed vex-pending`);
   }, processedIssues);
-
-  if (!CLOUD_RUN_JOB || !CLOUD_RUN_REGION || !GCP_PROJECT) {
-    return console.warn('CLOUD_RUN_JOB, CLOUD_RUN_REGION, or GCP_PROJECT not set, skipping Cloud Run Job trigger.');
-  }
-  const vexPathList = [...successfulVexPaths].join(',');
-  await execFileAsync('gcloud', [
-    'run', 'jobs', 'execute', CLOUD_RUN_JOB,
-    '--region', CLOUD_RUN_REGION,
-    `--update-env-vars=^:^LOAD_ONLY=true:VEX_PATH=${vexPathList}`,
-    '--project', GCP_PROJECT,
-    '--async'
-  ]);
-  console.log(`Triggered ${CLOUD_RUN_JOB} with LOAD_ONLY=true`);
 };
 
 try {
