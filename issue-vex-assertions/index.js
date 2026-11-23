@@ -1,18 +1,11 @@
 import '../src/process-handlers.js';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { forEachSerialP, difference } from 'omnibelt';
 import { createVexDocument } from '../src/csaf.js';
 import { createGithubVexRepo, parseIssueMetadata } from '../src/github.js';
 
-const execFileAsync = promisify(execFile);
-
 const TIMEOUT_MINUTES  = Number(process.env.INPUT_TIMEOUT_MINUTES) || 360;
 const LOOKBACK_MS      = (TIMEOUT_MINUTES + 1) * 60 * 1000;
 const VEX_REPO         = process.env.INPUT_VEX_REPO;
-const GCP_PROJECT      = process.env.INPUT_GCP_PROJECT;
-const CLOUD_RUN_JOB    = process.env.INPUT_CLOUD_RUN_JOB;
-const CLOUD_RUN_REGION = process.env.INPUT_CLOUD_RUN_REGION;
 
 if (!VEX_REPO) { throw new Error('INPUT_VEX_REPO (vex_repo action input) is required'); }
 const [VEX_OWNER, VEX_REPO_NAME] = VEX_REPO.split('/');
@@ -147,19 +140,6 @@ const run = async () => {
     await issuesGhRepo.markIssueAsReflected({ owner: ISSUES_OWNER, repo: ISSUES_REPO_NAME, issue });
     console.log(`  Labeled #${issue.number} as vex-reflected, removed vex-pending`);
   }, processedIssues);
-
-  if (!CLOUD_RUN_JOB || !CLOUD_RUN_REGION || !GCP_PROJECT) {
-    return console.warn('CLOUD_RUN_JOB, CLOUD_RUN_REGION, or GCP_PROJECT not set, skipping Cloud Run Job trigger.');
-  }
-  const vexPathList = [...successfulVexPaths].join(',');
-  await execFileAsync('gcloud', [
-    'run', 'jobs', 'execute', CLOUD_RUN_JOB,
-    '--region', CLOUD_RUN_REGION,
-    `--update-env-vars=^:^LOAD_ONLY=true:VEX_PATH=${vexPathList}`,
-    '--project', GCP_PROJECT,
-    '--async'
-  ]);
-  console.log(`Triggered ${CLOUD_RUN_JOB} with LOAD_ONLY=true`);
 };
 
 try {
